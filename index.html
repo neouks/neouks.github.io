@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ECU Log Viewer</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <main class="main-layout">
+      <section class="chart-card sh-card">
+        <header class="chart-header">
+          <div class="chart-heading">
+            <p class="eyebrow">ECU Log Viewer</p>
+            <h1 id="chartTitle">Data Stream</h1>
+          </div>
+        </header>
+
+        <div class="canvas-wrap">
+          <canvas id="logChart"></canvas>
+          <div id="coordinateTooltip" class="coordinate-tooltip" aria-hidden="true"></div>
+          <label id="emptyState" class="empty-state upload-empty sh-card">
+            <input id="fileInput" type="file" accept=".csv,.xlsx,.xls" />
+            <span class="upload-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <path d="M17 8l-5-5-5 5" />
+                <path d="M12 3v12" />
+              </svg>
+            </span>
+            <strong>上传 LOG 数据</strong>
+            <span id="fileMeta" class="file-meta">拖拽或点击上传 CSV / XLSX 日志</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="datalog-section sh-card">
+        <div class="section-title-row">
+          <div>
+            <p class="eyebrow">Raw Data</p>
+            <h2>数据流表格</h2>
+          </div>
+          <button id="dataTableToggle" class="sh-button sh-button-secondary datalog-toggle" type="button">
+            <span>展开表格</span>
+            <i aria-hidden="true"></i>
+          </button>
+        </div>
+        <div id="dataTablePanel" class="datalog-panel" aria-hidden="true">
+          <div id="dataTableWrap" class="data-table-wrap empty">请先上传日志文件</div>
+          <div class="datalog-actions">
+            <button id="exportCsvBtn" class="sh-button datalog-export" type="button">导出 CSV</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <button id="drawerToggle" class="drawer-toggle sh-button" type="button" aria-label="打开或关闭 Measures 面板">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M4 6h16" />
+      <path d="M4 12h16" />
+      <path d="M4 18h16" />
+    </svg>
+    <span>Measures</span>
+  </button>
+
+  <aside id="controlDrawer" class="control-drawer sh-sheet" aria-hidden="true">
+    <div class="drawer-header">
+      <div>
+        <p class="eyebrow">Controls</p>
+        <h2>Measures</h2>
+      </div>
+      <div class="drawer-actions">
+        <button id="themeToggle" class="sh-button sh-button-secondary theme-toggle" type="button" aria-label="切换深浅色主题">
+          <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+          <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 7.5A9 9 0 1 1 12 3Z"/></svg>
+          <span>主题</span>
+        </button>
+        <button id="toggleAllBtn" class="sh-button sh-button-secondary" type="button">隐藏全部</button>
+      </div>
+    </div>
+
+    <section class="drawer-options sh-card">
+      <label class="switch-row">
+        <input id="showExtrema" type="checkbox" checked />
+        <span class="switch-ui" aria-hidden="true"></span>
+        <span>Min / Max points</span>
+      </label>
+      <label class="switch-row">
+        <input id="showPoints" type="checkbox" />
+        <span class="switch-ui" aria-hidden="true"></span>
+        <span>Sample points</span>
+      </label>
+    </section>
+
+    <section class="measures-panel sh-card">
+      <div class="panel-title-row">
+        <h2>数据流</h2>
+        <span><span id="measureCount">0</span> measures</span>
+      </div>
+      <div id="measureGroups" class="measure-groups empty">请先上传日志文件</div>
+    </section>
+
+    <section class="stats-card sh-card">
+      <div class="panel-title-row">
+        <h2>Min / Max</h2>
+        <span id="visibleCount">0 visible</span>
+      </div>
+      <div id="statsTable" class="stats-table empty">暂无数据</div>
+    </section>
+  </aside>
+
+  <script src="./vendor/xlsx.full.min.js"></script>
+  <script src="./vendor/chart.umd.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
