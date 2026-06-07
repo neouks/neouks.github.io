@@ -33,7 +33,6 @@ const els = {
   dataTablePanel: document.getElementById('dataTablePanel'),
   dataTableWrap: document.getElementById('dataTableWrap'),
   exportCsvBtn: document.getElementById('exportCsvBtn'),
-  exportShareBtn: document.getElementById('exportShareBtn'),
   chartTitle: document.getElementById('chartTitle'),
   emptyState: document.getElementById('emptyState'),
   coordinateTooltip: document.getElementById('coordinateTooltip'),
@@ -722,22 +721,6 @@ function setData(newMeasures, labels) {
   renderViews();
 }
 
-function restoreSharedLog(payload) {
-  if (!payload?.sampleLabels?.length || !payload?.measures?.length) throw new Error('分享数据格式无效');
-  sourceName = payload.name || payload.sourceName || `log-${payload.id || 'shared'}`;
-  const restored = payload.measures.map((m, index) => makeMeasure({
-    name: m.name || `Measure ${index + 1}`,
-    unit: m.unit || '',
-    values: Array.isArray(m.values) ? m.values.map(v => toNumber(v)) : [],
-    color: m.color || palette[index % palette.length]
-  }));
-  restored.forEach((m, index) => {
-    if (payload.measures[index]?.visible === false) m.visible = false;
-  });
-  setData(restored, payload.sampleLabels.map(String));
-  updateParseProgress(`已载入分享 LOG：${sourceName}｜${payload.sampleLabels.length} 个采样点｜${restored.length} 条数据流`);
-}
-
 function renderViews() {
   renderMeasureControls();
   renderChart();
@@ -1296,157 +1279,15 @@ function exportVisibleCsv() {
   for (let i = 0; i < sampleLabels.length; i++) {
     lines.push(visible.map(m => csvEscape(m.values[i] ?? '')).join(','));
   }
-  downloadText(`${(sourceName || 'datalog').replace(/\.[^.]+$/, '')}-visible.csv`, lines.join('\n'), 'text/csv;charset=utf-8');
-}
-
-function exportSharePackage() {
-  if (!measures.length) return;
-  const id = createShareId();
-  const payload = buildSharePayload(id);
-  const json = JSON.stringify(payload, null, 2);
-  const html = buildShareIndexHtml(id);
-  const readme = [
-    `ECU Log Viewer 分享包：${id}`,
-    '',
-    '使用方式：',
-    '1. 解压本 ZIP 到 GitHub Pages 仓库根目录。',
-    `2. 确认存在 log/${id}/data.json 和 log/${id}/index.html。`,
-    '3. 提交并 push 到 GitHub。',
-    `4. 分享链接：你的 GitHub Pages 域名/log/${id}/`,
-    '',
-    `主页面也可直接访问：?log=${id}`
-  ].join('\n');
-  downloadBlob(`log-${id}.zip`, buildZipBlob([
-    { path: `log/${id}/data.json`, text: json },
-    { path: `log/${id}/index.html`, text: html },
-    { path: `log/${id}/README.txt`, text: readme }
-  ]));
-  updateParseProgress(`分享包已生成：解压 log-${id}.zip 到 GitHub Pages 仓库根目录即可分享`);
-}
-
-function createShareId() {
-  if (crypto.getRandomValues) {
-    const bytes = new Uint8Array(6);
-    crypto.getRandomValues(bytes);
-    return [...bytes].map(b => b.toString(36).padStart(2, '0')).join('').slice(0, 8);
-  }
-  return Math.random().toString(36).slice(2, 10);
-}
-
-function buildSharePayload(id) {
-  return {
-    version: 1,
-    id,
-    name: sourceName || 'ECU LOG',
-    createdAt: new Date().toISOString(),
-    sampleLabels,
-    measures: measures.map(m => ({
-      name: m.name,
-      unit: m.unit,
-      color: m.color,
-      visible: m.visible,
-      values: m.values
-    }))
-  };
-}
-
-function buildShareIndexHtml(id) {
-  return `<!doctype html>
-<html lang="zh-CN">
-<head><meta charset="utf-8"><title>ECU Log ${escapeHtml(id)}</title></head>
-<body>
-<script>
-location.replace('../../?log=${encodeURIComponent(id)}');
-</script>
-</body>
-</html>
-`;
-}
-
-function downloadText(filename, text, type) {
-  downloadBlob(filename, new Blob([text], { type }));
-}
-
-function downloadBlob(filename, blob) {
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename;
+  a.download = `${(sourceName || 'datalog').replace(/\.[^.]+$/, '')}-visible.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
-}
-
-function buildZipBlob(files) {
-  const encoder = new TextEncoder();
-  const localParts = [];
-  const centralParts = [];
-  let offset = 0;
-
-  for (const file of files) {
-    const name = encoder.encode(file.path);
-    const data = encoder.encode(file.text);
-    const crc = crc32(data);
-    const localHeader = zipHeader([
-      0x04034b50, 20, 0x0800, 0, 0, 0, crc, data.length, data.length, name.length, 0
-    ], [4, 2, 2, 2, 2, 2, 4, 4, 4, 2, 2]);
-    localParts.push(localHeader, name, data);
-
-    const centralHeader = zipHeader([
-      0x02014b50, 20, 20, 0x0800, 0, 0, 0, crc, data.length, data.length,
-      name.length, 0, 0, 0, 0, 0, offset
-    ], [4, 2, 2, 2, 2, 2, 2, 4, 4, 4, 2, 2, 2, 2, 2, 4, 4]);
-    centralParts.push(centralHeader, name);
-    offset += localHeader.length + name.length + data.length;
-  }
-
-  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
-  const end = zipHeader([
-    0x06054b50, 0, 0, files.length, files.length, centralSize, offset, 0
-  ], [4, 2, 2, 2, 2, 4, 4, 2]);
-  return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
-}
-
-function zipHeader(values, sizes) {
-  const length = sizes.reduce((sum, size) => sum + size, 0);
-  const out = new Uint8Array(length);
-  const view = new DataView(out.buffer);
-  let offset = 0;
-  values.forEach((value, index) => {
-    const size = sizes[index];
-    if (size === 2) view.setUint16(offset, value, true);
-    else view.setUint32(offset, value >>> 0, true);
-    offset += size;
-  });
-  return out;
-}
-
-function crc32(data) {
-  let crc = 0xffffffff;
-  for (const byte of data) {
-    crc ^= byte;
-    for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
-  }
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-async function loadSharedLogFromUrl() {
-  const id = new URLSearchParams(location.search).get('log');
-  if (!id) return;
-  if (!/^[a-z0-9_-]{3,64}$/i.test(id)) {
-    updateParseProgress('分享 LOG ID 格式无效');
-    return;
-  }
-  updateParseProgress(`正在加载分享 LOG：${id}`);
-  try {
-    const res = await fetch(`./log/${encodeURIComponent(id)}/data.json`, { cache: 'no-cache' });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    restoreSharedLog(await res.json());
-  } catch (err) {
-    console.error(err);
-    updateParseProgress(`分享 LOG 加载失败：请确认 log/${id}/data.json 已部署到 GitHub Pages`);
-  }
 }
 
 function csvEscape(value) {
@@ -1484,7 +1325,6 @@ els.toggleAllBtn.addEventListener('click', () => {
 });
 els.dataTableToggle.addEventListener('click', toggleDataTable);
 els.exportCsvBtn.addEventListener('click', exportVisibleCsv);
-els.exportShareBtn.addEventListener('click', exportSharePackage);
 els.showExtrema.addEventListener('change', renderChart);
 els.showPoints.addEventListener('change', renderChart);
 els.themeToggle?.addEventListener('click', toggleTheme);
@@ -1516,5 +1356,3 @@ for (const target of [els.navigatorTrack, els.navigatorLeftHandle, els.navigator
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
 window.addEventListener('resize', () => { hideCoordinateTooltip(true); chart?.resize(); navigatorChart?.resize(); updateNavigatorSelection(); });
-
-loadSharedLogFromUrl();
