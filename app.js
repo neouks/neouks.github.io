@@ -33,17 +33,31 @@ const els = {
   dataTablePanel: document.getElementById('dataTablePanel'),
   dataTableWrap: document.getElementById('dataTableWrap'),
   exportCsvBtn: document.getElementById('exportCsvBtn'),
+  exportShareBtn: document.getElementById('exportShareBtn'),
   chartTitle: document.getElementById('chartTitle'),
   emptyState: document.getElementById('emptyState'),
   coordinateTooltip: document.getElementById('coordinateTooltip'),
-  canvas: document.getElementById('logChart')
+  canvasWrap: document.getElementById('canvasWrap'),
+  canvas: document.getElementById('logChart'),
+  chartNavigator: document.getElementById('chartNavigator'),
+  navigatorCanvas: document.getElementById('navigatorCanvas'),
+  navigatorTrack: document.getElementById('navigatorTrack'),
+  navigatorSelection: document.getElementById('navigatorSelection'),
+  navigatorLeftHandle: document.getElementById('navigatorLeftHandle'),
+  navigatorRightHandle: document.getElementById('navigatorRightHandle'),
+  rangeMeta: document.getElementById('rangeMeta'),
+  xZoomInBtn: document.getElementById('xZoomInBtn'),
+  xZoomOutBtn: document.getElementById('xZoomOutBtn')
 };
 
 let chart;
+let navigatorChart;
 let measures = [];
 let sampleLabels = [];
 let sourceName = '';
 let currentTheme = localStorage.getItem('log-viewer-theme') || 'light';
+let xView = { start: 0, end: 0 };
+let navDrag = null;
 let tooltipState = {
   dataIndex: -1,
   x: 0,
@@ -698,15 +712,36 @@ function setData(newMeasures, labels) {
   rebuildNormalizedValues(newMeasures);
   measures = newMeasures;
   sampleLabels = labels;
+  resetXView();
   syncToggleAllButton();
   els.emptyState.style.display = 'none';
+  els.canvasWrap.classList.add('with-navigator');
+  els.chartNavigator.classList.add('ready');
+  els.chartNavigator.setAttribute('aria-hidden', 'false');
   hideCoordinateTooltip(true);
   renderViews();
+}
+
+function restoreSharedLog(payload) {
+  if (!payload?.sampleLabels?.length || !payload?.measures?.length) throw new Error('分享数据格式无效');
+  sourceName = payload.name || payload.sourceName || `log-${payload.id || 'shared'}`;
+  const restored = payload.measures.map((m, index) => makeMeasure({
+    name: m.name || `Measure ${index + 1}`,
+    unit: m.unit || '',
+    values: Array.isArray(m.values) ? m.values.map(v => toNumber(v)) : [],
+    color: m.color || palette[index % palette.length]
+  }));
+  restored.forEach((m, index) => {
+    if (payload.measures[index]?.visible === false) m.visible = false;
+  });
+  setData(restored, payload.sampleLabels.map(String));
+  updateParseProgress(`已载入分享 LOG：${sourceName}｜${payload.sampleLabels.length} 个采样点｜${restored.length} 条数据流`);
 }
 
 function renderViews() {
   renderMeasureControls();
   renderChart();
+  renderNavigator();
   renderStats();
   renderDataTable();
 }
@@ -785,13 +820,71 @@ function themeColors() {
       };
 }
 
+function resetXView() {
+  xView = { start: 0, end: Math.max(0, sampleLabels.length - 1) };
+}
+
+function currentWindow() {
+  const total = sampleLabels.length;
+  if (!total) return { start: 0, end: 0, labels: [] };
+  const start = clamp(Math.round(xView.start), 0, total - 1);
+  const end = clamp(Math.round(xView.end), start, total - 1);
+  return { start, end, labels: sampleLabels.slice(start, end + 1) };
+}
+
+function setXView(start, end, shouldRender = true) {
+  const total = sampleLabels.length;
+  if (!total) return;
+  const minSpan = Math.min(total, 8);
+  let nextStart = Math.round(start);
+  let nextEnd = Math.round(end);
+  if (nextEnd - nextStart + 1 < minSpan) {
+    const mid = (nextStart + nextEnd) / 2;
+    nextStart = Math.floor(mid - (minSpan - 1) / 2);
+    nextEnd = nextStart + minSpan - 1;
+  }
+  if (nextStart < 0) {
+    nextEnd -= nextStart;
+    nextStart = 0;
+  }
+  if (nextEnd > total - 1) {
+    nextStart -= nextEnd - (total - 1);
+    nextEnd = total - 1;
+  }
+  xView = {
+    start: clamp(nextStart, 0, total - 1),
+    end: clamp(nextEnd, 0, total - 1)
+  };
+  if (shouldRender) {
+    hideCoordinateTooltip(true);
+    renderChart();
+    renderNavigator();
+    renderDataTable();
+  }
+}
+
+function zoomX(factor, anchorRatio = 0.5) {
+  const total = sampleLabels.length;
+  if (!total) return;
+  const width = xView.end - xView.start + 1;
+  const nextWidth = clamp(Math.round(width * factor), Math.min(total, 8), total);
+  const anchor = xView.start + (width - 1) * anchorRatio;
+  setXView(anchor - (nextWidth - 1) * anchorRatio, anchor + (nextWidth - 1) * (1 - anchorRatio));
+}
+
+function rangeText() {
+  if (!sampleLabels.length) return '区间 --';
+  return `${xView.start + 1} - ${xView.end + 1} / ${sampleLabels.length}`;
+}
+
 function renderChart() {
   const visible = measures.filter(m => m.visible);
   hideCoordinateTooltip(true);
   const colors = themeColors();
+  const win = currentWindow();
   const datasets = visible.map(m => ({
     label: `${m.name}${m.unit ? ` (${m.unit})` : ''}`,
-    data: m.normalized,
+    data: m.normalized.slice(win.start, win.end + 1),
     borderColor: m.color,
     backgroundColor: m.color,
     borderWidth: 2.2,
@@ -804,8 +897,8 @@ function renderChart() {
 
   if (els.showExtrema.checked) {
     for (const m of visible) {
-      datasets.push(markerDataset(m, 'MAX', m.maxIndex, m.normalized[m.maxIndex], m.max));
-      datasets.push(markerDataset(m, 'MIN', m.minIndex, m.normalized[m.minIndex], m.min));
+      datasets.push(markerDataset(m, 'MAX', m.maxIndex, m.normalized[m.maxIndex], m.max, win));
+      datasets.push(markerDataset(m, 'MIN', m.minIndex, m.normalized[m.minIndex], m.min, win));
     }
   }
 
@@ -834,9 +927,9 @@ function renderChart() {
   };
 
   if (!chart) {
-    chart = new Chart(els.canvas, { type: 'line', data: { labels: sampleLabels, datasets }, options });
+    chart = new Chart(els.canvas, { type: 'line', data: { labels: win.labels, datasets }, options });
   } else {
-    chart.data.labels = sampleLabels;
+    chart.data.labels = win.labels;
     chart.data.datasets = datasets;
     chart.options = options;
     chart.update();
@@ -844,10 +937,11 @@ function renderChart() {
   els.chartTitle.textContent = sourceName || 'Data Stream';
 }
 
-function markerDataset(m, type, index, y, rawValue) {
+function markerDataset(m, type, index, y, rawValue, win = currentWindow()) {
+  const inView = index >= win.start && index <= win.end;
   return {
     label: `${m.name} ${type} ${fmt(rawValue)}`,
-    data: sampleLabels.map((_, i) => i === index ? y : null),
+    data: win.labels.map((_, i) => inView && i === index - win.start ? y : null),
     borderColor: 'transparent',
     backgroundColor: m.color,
     pointRadius: 4,
@@ -855,6 +949,102 @@ function markerDataset(m, type, index, y, rawValue) {
     showLine: false,
     metaMeasure: m
   };
+}
+
+function renderNavigator() {
+  if (!els.navigatorCanvas || !sampleLabels.length) return;
+  const visible = measures.filter(m => m.visible);
+  const datasets = visible.map(m => ({
+    data: m.normalized,
+    borderColor: m.color,
+    backgroundColor: m.color,
+    borderWidth: 1.5,
+    pointRadius: 0,
+    tension: 0.12,
+    spanGaps: true
+  }));
+  const options = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    events: [],
+    plugins: {
+      legend: { display: false },
+      tooltip: { enabled: false }
+    },
+    scales: {
+      x: {
+        display: false,
+        grid: { display: false }
+      },
+      y: {
+        display: false,
+        min: -4,
+        max: 104,
+        grid: { display: false }
+      }
+    }
+  };
+
+  if (!navigatorChart) {
+    navigatorChart = new Chart(els.navigatorCanvas, { type: 'line', data: { labels: sampleLabels, datasets }, options });
+  } else {
+    navigatorChart.data.labels = sampleLabels;
+    navigatorChart.data.datasets = datasets;
+    navigatorChart.options = options;
+    navigatorChart.update('none');
+  }
+  updateNavigatorSelection();
+  if (els.rangeMeta) els.rangeMeta.textContent = rangeText();
+}
+
+function updateNavigatorSelection() {
+  if (!els.navigatorSelection || sampleLabels.length < 2) return;
+  const max = sampleLabels.length - 1;
+  const left = (xView.start / max) * 100;
+  const right = 100 - (xView.end / max) * 100;
+  els.navigatorSelection.style.left = `${left}%`;
+  els.navigatorSelection.style.width = `${Math.max(0, 100 - left - right)}%`;
+}
+
+function pointerToSampleIndex(event) {
+  const box = els.navigatorTrack.getBoundingClientRect();
+  const ratio = clamp((event.clientX - box.left) / Math.max(1, box.width), 0, 1);
+  return ratio * Math.max(0, sampleLabels.length - 1);
+}
+
+function startNavigatorDrag(mode, event) {
+  if (!sampleLabels.length) return;
+  event.preventDefault();
+  const startIndex = pointerToSampleIndex(event);
+  navDrag = {
+    mode,
+    pointerId: event.pointerId,
+    startIndex,
+    start: xView.start,
+    end: xView.end
+  };
+  els.navigatorTrack.classList.add('dragging');
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+}
+
+function moveNavigatorDrag(event) {
+  if (!navDrag) return;
+  const current = pointerToSampleIndex(event);
+  const delta = Math.round(current - navDrag.startIndex);
+  if (navDrag.mode === 'left') setXView(current, xView.end, false);
+  else if (navDrag.mode === 'right') setXView(xView.start, current, false);
+  else setXView(navDrag.start + delta, navDrag.end + delta, false);
+  renderChart();
+  renderNavigator();
+  renderDataTable();
+}
+
+function stopNavigatorDrag(event) {
+  if (!navDrag) return;
+  try { event.currentTarget.releasePointerCapture?.(navDrag.pointerId); } catch { /* ignore */ }
+  navDrag = null;
+  els.navigatorTrack.classList.remove('dragging');
 }
 
 function renderCoordinateTooltip(context) {
@@ -867,7 +1057,7 @@ function renderCoordinateTooltip(context) {
     return;
   }
 
-  const dataIndex = tooltip.dataPoints[0].dataIndex;
+  const dataIndex = currentWindow().start + tooltip.dataPoints[0].dataIndex;
   const visible = measures.filter(m => m.visible);
   if (!visible.length || dataIndex < 0) return;
   if (tooltipState.dataIndex !== dataIndex) {
@@ -1015,6 +1205,7 @@ function renderDataTable() {
 
   const groups = [];
   const byGroup = groupMeasures(visible);
+  const win = currentWindow();
   for (const groupName of knownGroups.map(g => g.name)) {
     const items = byGroup.get(groupName) || [];
     if (items.length) groups.push({ name: groupName, items });
@@ -1027,11 +1218,14 @@ function renderDataTable() {
       <small>[ ${escapeHtml(m.unit || '-')} ]</small>
     </th>
   `).join('');
-  const bodyRows = sampleLabels.map((label, rowIndex) => `
+  const bodyRows = win.labels.map((label, offset) => {
+    const rowIndex = win.start + offset;
+    return `
     <tr>
       ${flat.map(m => `<td>${fmt(m.values[rowIndex])}</td>`).join('')}
     </tr>
-  `).join('');
+  `;
+  }).join('');
 
   els.dataTableWrap.className = 'data-table-wrap';
   els.dataTableWrap.innerHTML = `
@@ -1102,15 +1296,157 @@ function exportVisibleCsv() {
   for (let i = 0; i < sampleLabels.length; i++) {
     lines.push(visible.map(m => csvEscape(m.values[i] ?? '')).join(','));
   }
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  downloadText(`${(sourceName || 'datalog').replace(/\.[^.]+$/, '')}-visible.csv`, lines.join('\n'), 'text/csv;charset=utf-8');
+}
+
+function exportSharePackage() {
+  if (!measures.length) return;
+  const id = createShareId();
+  const payload = buildSharePayload(id);
+  const json = JSON.stringify(payload, null, 2);
+  const html = buildShareIndexHtml(id);
+  const readme = [
+    `ECU Log Viewer 分享包：${id}`,
+    '',
+    '使用方式：',
+    '1. 解压本 ZIP 到 GitHub Pages 仓库根目录。',
+    `2. 确认存在 log/${id}/data.json 和 log/${id}/index.html。`,
+    '3. 提交并 push 到 GitHub。',
+    `4. 分享链接：你的 GitHub Pages 域名/log/${id}/`,
+    '',
+    `主页面也可直接访问：?log=${id}`
+  ].join('\n');
+  downloadBlob(`log-${id}.zip`, buildZipBlob([
+    { path: `log/${id}/data.json`, text: json },
+    { path: `log/${id}/index.html`, text: html },
+    { path: `log/${id}/README.txt`, text: readme }
+  ]));
+  updateParseProgress(`分享包已生成：解压 log-${id}.zip 到 GitHub Pages 仓库根目录即可分享`);
+}
+
+function createShareId() {
+  if (crypto.getRandomValues) {
+    const bytes = new Uint8Array(6);
+    crypto.getRandomValues(bytes);
+    return [...bytes].map(b => b.toString(36).padStart(2, '0')).join('').slice(0, 8);
+  }
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function buildSharePayload(id) {
+  return {
+    version: 1,
+    id,
+    name: sourceName || 'ECU LOG',
+    createdAt: new Date().toISOString(),
+    sampleLabels,
+    measures: measures.map(m => ({
+      name: m.name,
+      unit: m.unit,
+      color: m.color,
+      visible: m.visible,
+      values: m.values
+    }))
+  };
+}
+
+function buildShareIndexHtml(id) {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>ECU Log ${escapeHtml(id)}</title></head>
+<body>
+<script>
+location.replace('../../?log=${encodeURIComponent(id)}');
+</script>
+</body>
+</html>
+`;
+}
+
+function downloadText(filename, text, type) {
+  downloadBlob(filename, new Blob([text], { type }));
+}
+
+function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${(sourceName || 'datalog').replace(/\.[^.]+$/, '')}-visible.csv`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+function buildZipBlob(files) {
+  const encoder = new TextEncoder();
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+
+  for (const file of files) {
+    const name = encoder.encode(file.path);
+    const data = encoder.encode(file.text);
+    const crc = crc32(data);
+    const localHeader = zipHeader([
+      0x04034b50, 20, 0x0800, 0, 0, 0, crc, data.length, data.length, name.length, 0
+    ], [4, 2, 2, 2, 2, 2, 4, 4, 4, 2, 2]);
+    localParts.push(localHeader, name, data);
+
+    const centralHeader = zipHeader([
+      0x02014b50, 20, 20, 0x0800, 0, 0, 0, crc, data.length, data.length,
+      name.length, 0, 0, 0, 0, 0, offset
+    ], [4, 2, 2, 2, 2, 2, 2, 4, 4, 4, 2, 2, 2, 2, 2, 4, 4]);
+    centralParts.push(centralHeader, name);
+    offset += localHeader.length + name.length + data.length;
+  }
+
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const end = zipHeader([
+    0x06054b50, 0, 0, files.length, files.length, centralSize, offset, 0
+  ], [4, 2, 2, 2, 2, 4, 4, 2]);
+  return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
+}
+
+function zipHeader(values, sizes) {
+  const length = sizes.reduce((sum, size) => sum + size, 0);
+  const out = new Uint8Array(length);
+  const view = new DataView(out.buffer);
+  let offset = 0;
+  values.forEach((value, index) => {
+    const size = sizes[index];
+    if (size === 2) view.setUint16(offset, value, true);
+    else view.setUint32(offset, value >>> 0, true);
+    offset += size;
+  });
+  return out;
+}
+
+function crc32(data) {
+  let crc = 0xffffffff;
+  for (const byte of data) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+async function loadSharedLogFromUrl() {
+  const id = new URLSearchParams(location.search).get('log');
+  if (!id) return;
+  if (!/^[a-z0-9_-]{3,64}$/i.test(id)) {
+    updateParseProgress('分享 LOG ID 格式无效');
+    return;
+  }
+  updateParseProgress(`正在加载分享 LOG：${id}`);
+  try {
+    const res = await fetch(`./log/${encodeURIComponent(id)}/data.json`, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    restoreSharedLog(await res.json());
+  } catch (err) {
+    console.error(err);
+    updateParseProgress(`分享 LOG 加载失败：请确认 log/${id}/data.json 已部署到 GitHub Pages`);
+  }
 }
 
 function csvEscape(value) {
@@ -1148,9 +1484,37 @@ els.toggleAllBtn.addEventListener('click', () => {
 });
 els.dataTableToggle.addEventListener('click', toggleDataTable);
 els.exportCsvBtn.addEventListener('click', exportVisibleCsv);
+els.exportShareBtn.addEventListener('click', exportSharePackage);
 els.showExtrema.addEventListener('change', renderChart);
 els.showPoints.addEventListener('change', renderChart);
 els.themeToggle?.addEventListener('click', toggleTheme);
 els.drawerToggle.addEventListener('click', toggleDrawer);
+els.xZoomInBtn.addEventListener('click', () => zoomX(0.75));
+els.xZoomOutBtn.addEventListener('click', () => zoomX(1.35));
+els.navigatorTrack.addEventListener('wheel', e => {
+  if (!sampleLabels.length) return;
+  e.preventDefault();
+  const box = els.navigatorTrack.getBoundingClientRect();
+  zoomX(e.deltaY > 0 ? 1.18 : 0.82, clamp((e.clientX - box.left) / Math.max(1, box.width), 0, 1));
+}, { passive: false });
+els.canvas.addEventListener('wheel', e => {
+  if (!sampleLabels.length) return;
+  e.preventDefault();
+  const box = els.canvas.getBoundingClientRect();
+  zoomX(e.deltaY > 0 ? 1.18 : 0.82, clamp((e.clientX - box.left) / Math.max(1, box.width), 0, 1));
+}, { passive: false });
+els.navigatorTrack.addEventListener('pointerdown', e => {
+  if (e.target.closest('.navigator-handle')) return;
+  startNavigatorDrag('move', e);
+});
+els.navigatorLeftHandle.addEventListener('pointerdown', e => startNavigatorDrag('left', e));
+els.navigatorRightHandle.addEventListener('pointerdown', e => startNavigatorDrag('right', e));
+for (const target of [els.navigatorTrack, els.navigatorLeftHandle, els.navigatorRightHandle]) {
+  target.addEventListener('pointermove', moveNavigatorDrag);
+  target.addEventListener('pointerup', stopNavigatorDrag);
+  target.addEventListener('pointercancel', stopNavigatorDrag);
+}
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
-window.addEventListener('resize', () => { hideCoordinateTooltip(true); chart?.resize(); });
+window.addEventListener('resize', () => { hideCoordinateTooltip(true); chart?.resize(); navigatorChart?.resize(); updateNavigatorSelection(); });
+
+loadSharedLogFromUrl();
