@@ -134,29 +134,80 @@ function compactText(value) {
   return String(value ?? '').replace(/\s+/g, ' ').trim();
 }
 
-function toNumber(v) {
+function toNumber(v, options = {}) {
   if (v === null || v === undefined || v === '') return null;
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   let s = String(v).trim();
   if (!s || /^[-–—]$/.test(s)) return null;
   if (/[\u4e00-\u9fff]/.test(s)) return null;
-  s = s
-    .replace(/[％%]$/, '')
-    .replace(/\s+/g, '');
 
-  const numericPattern = /^[-+]?(?:(?:\d{1,3}(?:,\d{3})+)|\d+)(?:[.,]\d+)?(?:e[-+]?\d+)?(?:%|°|℃|°c|c|v|mv|a|ma|bar|mbar|hpa|kpa|pa|psi|nm|n·m|rpm|\/min|r\/min|km\/h|lambda|afr)?$/i;
-  if (!numericPattern.test(s)) return null;
+  s = s.replace(/[％%]\s*$/, '%').replace(/\u00a0/g, ' ');
+  const unitSuffix = '(?:%|°|℃|°c|\\*c|c|v|mv|kv|a|ma|bar|mbar|hpa|kpa|mpa|pa|psi|nm|n·m|rpm|\\/min|1\\/min|min-1|r\\/min|km\\/h|kph|mph|lambda|afr|ms|s|kw|hp|hz|khz|mhz|kg\\/h|g\\/s|mg\\/str|mg\\/stroke|l\\/h|l\\/min|ohm|Ω|cfm)';
+  const match = s.match(new RegExp(`^([+-]?(?:\\d|[.,])(?:[\\d\\s'.,]*\\d)?(?:e[+-]?\\d+)?)\\s*${unitSuffix}?$`, 'i'));
+  if (!match) return null;
 
-  let numericText = s.match(/^[-+]?(?:(?:\d{1,3}(?:,\d{3})+)|\d+)(?:[.,]\d+)?(?:e[-+]?\d+)?/i)?.[0];
+  const numericText = normalizeLocaleNumber(match[1], options);
   if (!numericText) return null;
-  if ((numericText.match(/,/g) || []).length === 1 && !numericText.includes('.')) numericText = numericText.replace(',', '.');
-  else numericText = numericText.replace(/,/g, '');
   const n = Number(numericText);
   return Number.isFinite(n) ? n : null;
 }
 
-function looksNumeric(v) {
-  return toNumber(v) !== null;
+function looksNumeric(v, options = {}) {
+  return toNumber(v, options) !== null;
+}
+
+function normalizeLocaleNumber(input, options = {}) {
+  let s = String(input).trim().replace(/[\s']/g, '');
+  if (!s) return '';
+
+  let exponent = '';
+  const expMatch = s.match(/^(.*?)(e[+-]?\d+)$/i);
+  if (expMatch) {
+    s = expMatch[1];
+    exponent = expMatch[2];
+  }
+  if (!/^[-+]?[0-9.,]+$/.test(s)) return '';
+
+  const sign = /^[+-]/.test(s) ? s[0] : '';
+  if (sign) s = s.slice(1);
+  if (!s || !/\d/.test(s)) return '';
+
+  const lastComma = s.lastIndexOf(',');
+  const lastDot = s.lastIndexOf('.');
+  let decimalSep = '';
+  let thousandSep = '';
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    decimalSep = lastComma > lastDot ? ',' : '.';
+    thousandSep = decimalSep === ',' ? '.' : ',';
+  } else if (lastComma >= 0) {
+    decimalSep = inferSingleSeparator(s, ',', options);
+    thousandSep = decimalSep ? '' : ',';
+  } else if (lastDot >= 0) {
+    decimalSep = inferSingleSeparator(s, '.', options);
+    thousandSep = decimalSep ? '' : '.';
+  }
+
+  if (thousandSep) s = s.split(thousandSep).join('');
+  if (decimalSep && decimalSep !== '.') s = s.replace(decimalSep, '.');
+
+  if (!/^\d+(?:\.\d+)?$/.test(s) && !/^\.\d+$/.test(s)) return '';
+  return `${sign}${s}${exponent}`;
+}
+
+function inferSingleSeparator(value, sep, options = {}) {
+  const parts = value.split(sep);
+  if (parts.length === 1) return '';
+  if (parts.length === 2) {
+    const [left, right] = parts;
+    if (!left) return sep;
+    if (sep === ',' && options.delimiter === ',' && right.length === 3 && left.length <= 3) return '';
+    return sep;
+  }
+  const last = parts[parts.length - 1];
+  const allThousands = parts.slice(1).every(part => part.length === 3);
+  if (allThousands) return '';
+  return last.length ? sep : '';
 }
 
 function isBlank(v) {
@@ -167,12 +218,41 @@ function isSkippedDataColumn(name) {
   return /^(时间|time|timestamp|date|日期|sec|秒|记录值|插入标记号|marker|mark|sample|index|序号)$/i.test(String(name ?? '').trim());
 }
 
+function stripUnitBrackets(value) {
+  return compactText(value).replace(/^[\[(（]\s*|\s*[\])）]$/g, '').trim();
+}
+
 function isUnitLike(value) {
-  const t = compactText(value).toLowerCase();
+  let t = stripUnitBrackets(value).toLowerCase();
   if (!t) return false;
   if (t.length > 24) return false;
-  return /^(\/min|rpm|r\/min|km\/h|mph|%|°|deg|°c|℃|\*c|c|v|mv|a|ma|bar|mbar|hpa|kpa|pa|psi|nm|n·m|kg\/h|g\/s|mg\/str|lambda|afr|ms|s|kw|hp|l\/h|ohm|Ω)$/i.test(t)
-    || /^[a-z%°℃Ω\/\.·-]{1,12}$/i.test(t);
+  return /^(\/min|1\/min|min-1|rpm|r\/min|km\/h|kph|mph|%|percent|°|deg|°c|℃|\*c|c|k|v|mv|kv|a|ma|bar|mbar|hpa|kpa|mpa|pa|psi|nm|n·m|kg\/h|g\/s|mg\/str|mg\/stroke|lambda|afr|ms|s|kw|hp|hz|khz|mhz|l\/h|l\/min|ohm|Ω|cfm)$/i.test(t)
+    || /^(?:m|μ|u|k|milli)?(?:v|a|pa|bar|s|hz)$/i.test(t);
+}
+
+function normalizeUnit(value) {
+  const unit = stripUnitBrackets(value);
+  return isUnitLike(unit) ? unit : '';
+}
+
+function splitHeaderNameUnit(rawName, rawUnit = '') {
+  let name = cleanName(rawName);
+  let unit = normalizeUnit(rawUnit);
+  if (!name) return { name, unit };
+
+  const bracketMatch = name.match(/^(.*?)[\s_-]*[\[(（]([^()[\]（）]{1,24})[\])）]\s*$/);
+  if (!unit && bracketMatch && isUnitLike(bracketMatch[2])) {
+    name = cleanName(bracketMatch[1]);
+    unit = normalizeUnit(bracketMatch[2]);
+  }
+
+  const trailingUnitMatch = name.match(/^(.*?)(?:\s+|_)(\/min|1\/min|min-1|rpm|r\/min|km\/h|kph|mph|%|°|deg|°c|℃|\*c|c|v|mv|kv|a|ma|bar|mbar|hpa|kpa|mpa|pa|psi|nm|n·m|kg\/h|g\/s|mg\/str|mg\/stroke|lambda|afr|ms|s|kw|hp|hz|khz|mhz|l\/h|l\/min|ohm|Ω|cfm)$/i);
+  if (!unit && trailingUnitMatch && isUnitLike(trailingUnitMatch[2])) {
+    name = cleanName(trailingUnitMatch[1]);
+    unit = normalizeUnit(trailingUnitMatch[2]);
+  }
+
+  return { name, unit };
 }
 
 function normalizeRows(rows) {
@@ -214,15 +294,7 @@ async function loadFile(file) {
   try {
     const data = await readFile(file);
     updateParseProgress('识别编码与表格结构…');
-    const isTextTable = /\.(csv|txt|tsv)$/i.test(file.name);
-    const text = isTextTable ? decodeText(data) : '';
-    const workbook = isTextTable
-      ? XLSX.read(text, { type: 'string', raw: true, dense: false, FS: guessDelimiter(text) })
-      : XLSX.read(data, { type: 'array', raw: true, cellDates: true, dense: false });
-    const ws = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null, blankrows: false });
-    updateParseProgress('提取数据名称和数值列…');
-    const parsed = parseRows(rows);
+    const parsed = parseFileData(file, data);
     if (!parsed.measures.length) throw new Error('没有找到可绘图的数值列');
     setData(parsed.measures, parsed.sampleLabels);
     updateParseProgress(`已载入：${file.name}｜${parsed.sampleLabels.length} 个采样点｜${parsed.measures.length} 条数据流｜${parsed.strategy}`);
@@ -239,23 +311,121 @@ function updateParseProgress(message) {
   if (els.fileMeta) els.fileMeta.textContent = message;
 }
 
+function parseFileData(file, data) {
+  const isTextTable = /\.(csv|txt|tsv)$/i.test(file.name);
+  if (isTextTable) {
+    const text = decodeText(data);
+    const delimiter = guessDelimiter(text);
+    updateParseProgress(`识别编码与分隔符：${delimiterName(delimiter)}｜提取数据名称和数值列…`);
+    const rows = parseDelimitedRows(text, delimiter);
+    const parsed = parseRows(rows, { delimiter });
+    parsed.strategy = `${parsed.strategy} · ${delimiterName(delimiter)}`;
+    return parsed;
+  }
+
+  const workbook = XLSX.read(data, {
+    type: 'array',
+    raw: true,
+    cellDates: false,
+    dense: false
+  });
+  updateParseProgress(`识别到 ${workbook.SheetNames.length} 个工作表｜提取数据名称和数值列…`);
+
+  const candidates = [];
+  const errors = [];
+  for (const sheetName of workbook.SheetNames) {
+    try {
+      const ws = workbook.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(ws, {
+        header: 1,
+        raw: true,
+        defval: null,
+        blankrows: false
+      });
+      const parsed = parseRows(rows);
+      const numericCount = parsed.measures.reduce((sum, m) => sum + m.values.filter(v => v !== null).length, 0);
+      candidates.push({
+        sheetName,
+        parsed,
+        score: parsed.measures.length * 100000 + parsed.sampleLabels.length * 100 + numericCount
+      });
+    } catch (err) {
+      errors.push(`${sheetName}: ${err.message || err}`);
+    }
+  }
+
+  if (!candidates.length) throw new Error(errors[0] || '未找到可用工作表');
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  best.parsed.strategy = `${best.parsed.strategy} · sheet: ${best.sheetName}`;
+  return best.parsed;
+}
+
+function delimiterName(delimiter) {
+  if (delimiter === '\t') return 'TSV';
+  if (delimiter === ';') return 'semicolon CSV';
+  if (delimiter === '|') return 'pipe table';
+  return 'comma CSV';
+}
+
 function guessDelimiter(text) {
-  const lines = String(text).split(/\r?\n/).filter(Boolean).slice(0, 12);
+  const lines = String(text).split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(0, 40);
   const delimiters = [',', ';', '\t', '|'];
   let best = ',';
   let bestScore = -Infinity;
   for (const delimiter of delimiters) {
-    const counts = lines.map(line => splitSimpleDelimitedLine(line, delimiter).length).filter(n => n > 1);
-    if (!counts.length) continue;
-    const avg = counts.reduce((a, b) => a + b, 0) / counts.length;
-    const variance = counts.reduce((sum, n) => sum + Math.abs(n - avg), 0) / counts.length;
-    const score = avg * 2 - variance;
+    const counts = lines.map(line => splitSimpleDelimitedLine(line, delimiter).length);
+    const multiCounts = counts.filter(n => n > 1);
+    if (multiCounts.length < Math.min(2, lines.length)) continue;
+    const freq = new Map();
+    for (const count of multiCounts) freq.set(count, (freq.get(count) || 0) + 1);
+    const [modeCount, modeHits] = [...freq.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0];
+    const avg = multiCounts.reduce((a, b) => a + b, 0) / multiCounts.length;
+    const variance = multiCounts.reduce((sum, n) => sum + Math.abs(n - avg), 0) / multiCounts.length;
+    const consistency = modeHits / counts.length;
+    const singleLinePenalty = counts.filter(n => n === 1).length * 1.6;
+    const score = modeCount * 2.5 + multiCounts.length * 1.2 + consistency * 18 - variance * 2.5 - singleLinePenalty;
     if (score > bestScore) {
       bestScore = score;
       best = delimiter;
     }
   }
   return best;
+}
+
+function parseDelimitedRows(text, delimiter = ',') {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  const src = String(text).replace(/^\uFEFF/, '');
+
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '"') {
+      if (quoted && src[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (ch === delimiter && !quoted) {
+      row.push(cell);
+      cell = '';
+    } else if ((ch === '\n' || ch === '\r') && !quoted) {
+      if (ch === '\r' && src[i + 1] === '\n') i++;
+      row.push(cell);
+      if (row.some(v => !isBlank(v))) rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+
+  row.push(cell);
+  if (row.some(v => !isBlank(v))) rows.push(row);
+  return rows;
 }
 
 function splitSimpleDelimitedLine(line, delimiter) {
@@ -282,17 +452,23 @@ function splitSimpleDelimitedLine(line, delimiter) {
   return out;
 }
 
-function parseRows(rows) {
+function parseRows(rows, options = {}) {
   const normalizedRows = normalizeRows(rows);
   if (!normalizedRows.length) throw new Error('文件为空');
-  const pairedProfile = detectPairedValueProfile(normalizedRows);
-  if (pairedProfile) return buildSeriesFromPairedProfile(normalizedRows, pairedProfile);
-  const profile = detectTableProfile(normalizedRows);
-  return buildSeriesFromProfile(normalizedRows, profile);
+  const pairedProfile = detectPairedValueProfile(normalizedRows, options);
+  if (pairedProfile) {
+    try {
+      return buildSeriesFromPairedProfile(normalizedRows, pairedProfile, options);
+    } catch (err) {
+      console.warn('Paired parser failed, falling back to generic table parser:', err);
+    }
+  }
+  const profile = detectTableProfile(normalizedRows, options);
+  return buildSeriesFromProfile(normalizedRows, profile, options);
 }
 
-function detectPairedValueProfile(rows) {
-  const stats = rows.map(rowStats);
+function detectPairedValueProfile(rows, options = {}) {
+  const stats = rows.map(row => rowStats(row, options));
   for (let i = 0; i < rows.length - 3; i++) {
     const nameRow = rows[i + 1] || [];
     const unitRow = rows[i + 2] || [];
@@ -314,15 +490,16 @@ function detectPairedValueProfile(rows) {
   return null;
 }
 
-function buildSeriesFromPairedProfile(rows, profile) {
-  const dataRows = rows.slice(profile.dataStartIdx).filter(row => rowStats(row).numeric >= 1);
+function buildSeriesFromPairedProfile(rows, profile, options = {}) {
+  const dataRows = rows.slice(profile.dataStartIdx).filter(row => rowStats(row, options).numeric >= 1);
   const series = [];
   const labels = dataRows.map((_, i) => `#${i + 1}`);
   const nameRow = rows[profile.nameRowIdx] || [];
   const unitRow = profile.unitRowIdx >= 0 ? rows[profile.unitRowIdx] || [] : [];
 
   for (let c = 0; c < nameRow.length; c++) {
-    const name = cleanName(nameRow[c]);
+    const parsedHeader = splitHeaderNameUnit(nameRow[c], unitRow[c]);
+    const name = parsedHeader.name;
     if (!name || isSkippedDataColumn(name) || isUnitLike(name)) continue;
     const nextLabel = compactText(nameRow[c + 1]).toLowerCase();
     const prevLabel = compactText(nameRow[c - 1]).toLowerCase();
@@ -330,23 +507,26 @@ function buildSeriesFromPairedProfile(rows, profile) {
       || nextLabel === '记录值' || nextLabel === 'value'
       || unitRow[c];
     if (!likelyValueColumn) continue;
-    const values = dataRows.map(row => toNumber(row[c]));
+    const values = dataRows.map(row => toNumber(row[c], options));
     const count = values.filter(v => v !== null).length;
     if (count < Math.max(2, Math.ceil(dataRows.length * 0.08))) continue;
-    const unit = compactText(unitRow[c] || '');
     series.push(makeMeasure({
       name,
-      unit: isUnitLike(unit) ? unit : '',
+      unit: parsedHeader.unit,
       values,
       color: palette[series.length % palette.length]
     }));
   }
 
   if (!series.length) throw new Error('没有找到可绘图的数值列');
-  return { measures: series, sampleLabels: labels };
+  return {
+    measures: series,
+    sampleLabels: labels,
+    strategy: 'VCDS paired value columns'
+  };
 }
 
-function rowStats(row) {
+function rowStats(row, options = {}) {
   const cells = row || [];
   let nonBlank = 0;
   let numeric = 0;
@@ -355,7 +535,7 @@ function rowStats(row) {
   for (const cell of cells) {
     if (isBlank(cell)) continue;
     nonBlank++;
-    if (looksNumeric(cell)) numeric++;
+    if (looksNumeric(cell, options)) numeric++;
     else {
       textLike++;
       if (isUnitLike(cell)) unitLike++;
@@ -364,8 +544,8 @@ function rowStats(row) {
   return { nonBlank, numeric, textLike, unitLike, numericRatio: nonBlank ? numeric / nonBlank : 0 };
 }
 
-function detectTableProfile(rows) {
-  const stats = rows.map(rowStats);
+function detectTableProfile(rows, options = {}) {
+  const stats = rows.map(row => rowStats(row, options));
   let bestIdx = -1;
   let bestScore = -Infinity;
 
@@ -387,7 +567,14 @@ function detectTableProfile(rows) {
   }
 
   if (bestIdx < 0) {
-    bestIdx = rows.findIndex((_, i) => stats.slice(i + 1, i + 6).filter(s => s.numeric >= 2).length >= 2);
+    const firstNumericIdx = rows.findIndex((_, i) =>
+      stats[i].numeric >= 2
+      && stats[i].numericRatio >= 0.45
+      && stats.slice(i, i + 6).filter(s => s.numeric >= 2 && s.numericRatio >= 0.45).length >= 2
+    );
+    if (firstNumericIdx >= 0) {
+      return { headerRows: [], unitRowIdx: -1, dataStartIdx: firstNumericIdx };
+    }
   }
   if (bestIdx < 0) throw new Error('未找到可用的数据表头');
 
@@ -400,8 +587,8 @@ function detectTableProfile(rows) {
   return { headerRows, unitRowIdx, dataStartIdx };
 }
 
-function buildSeriesFromProfile(rows, profile) {
-  const dataRows = rows.slice(profile.dataStartIdx).filter(row => rowStats(row).numeric >= 1);
+function buildSeriesFromProfile(rows, profile, options = {}) {
+  const dataRows = rows.slice(profile.dataStartIdx).filter(row => rowStats(row, options).numeric >= 1);
   if (!dataRows.length) throw new Error('未找到数据行');
 
   const maxCols = Math.max(...rows.map(r => r.length));
@@ -414,23 +601,28 @@ function buildSeriesFromProfile(rows, profile) {
       .filter(Boolean)
       .filter(part => !isSkippedDataColumn(part));
     const rawName = mergeHeaderParts(headerParts);
-    const unit = profile.unitRowIdx >= 0 ? compactText(rows[profile.unitRowIdx]?.[c]) : '';
-    const values = dataRows.map(row => toNumber(row[c]));
+    const explicitUnit = profile.unitRowIdx >= 0 ? rows[profile.unitRowIdx]?.[c] : '';
+    const values = dataRows.map(row => toNumber(row[c], options));
     const count = values.filter(v => v !== null).length;
     if (count < Math.max(2, Math.ceil(dataRows.length * 0.08))) continue;
 
-    const name = rawName || inferNameFromColumn(rows, c) || `Column ${c + 1}`;
-    if (isSkippedDataColumn(name)) continue;
+    const parsedHeader = splitHeaderNameUnit(rawName || inferNameFromColumn(rows, c), explicitUnit);
+    const name = parsedHeader.name || `Column ${c + 1}`;
+    if (isSkippedDataColumn(name) || isUnitLike(name)) continue;
     series.push(makeMeasure({
       name,
-      unit: isUnitLike(unit) ? unit : '',
+      unit: parsedHeader.unit,
       values,
       color: palette[series.length % palette.length]
     }));
   }
 
   if (!series.length) throw new Error('没有找到可绘图的数值列');
-  return { measures: series, sampleLabels: labels };
+  return {
+    measures: series,
+    sampleLabels: labels,
+    strategy: 'generic header / unit table'
+  };
 }
 
 function mergeHeaderParts(parts) {
@@ -723,7 +915,7 @@ function positionCoordinateTooltip(chartInstance, tooltip) {
   let left = canPlaceRight ? caretX + 12 : caretX - panelWidth - 12;
   left = Math.max(viewportPadding, Math.min(left, window.innerWidth - panelWidth - viewportPadding));
 
-  // Keep the Measures tooltip vertically stable while following the sampled X position.
+  // Keep the coordinate tooltip vertically stable while following the sampled X position.
   const chartTop = canvasBox.top + chartArea.top;
   const chartHeight = Math.max(0, chartArea.bottom - chartArea.top);
   const preferredTop = chartTop + chartHeight * 0.38;
