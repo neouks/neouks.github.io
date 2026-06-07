@@ -110,16 +110,7 @@ function toggleTheme() {
   applyTheme(currentTheme === 'dark' ? 'light' : 'dark');
 }
 
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function median(values) {
-  if (!values.length) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
 function cleanName(name) {
   return String(name ?? '')
@@ -152,9 +143,7 @@ function toNumber(v, options = {}) {
   return Number.isFinite(n) ? n : null;
 }
 
-function looksNumeric(v, options = {}) {
-  return toNumber(v, options) !== null;
-}
+const looksNumeric = (v, options = {}) => toNumber(v, options) !== null;
 
 function normalizeLocaleNumber(input, options = {}) {
   let s = String(input).trim().replace(/[\s']/g, '');
@@ -210,17 +199,13 @@ function inferSingleSeparator(value, sep, options = {}) {
   return last.length ? sep : '';
 }
 
-function isBlank(v) {
-  return v === null || v === undefined || String(v).trim() === '';
-}
+const isBlank = v => v === null || v === undefined || String(v).trim() === '';
 
 function isSkippedDataColumn(name) {
   return /^(时间|time|timestamp|date|日期|sec|秒|记录值|插入标记号|marker|mark|sample|index|序号)$/i.test(String(name ?? '').trim());
 }
 
-function stripUnitBrackets(value) {
-  return compactText(value).replace(/^[\[(（]\s*|\s*[\])）]$/g, '').trim();
-}
+const stripUnitBrackets = value => compactText(value).replace(/^[\[(（]\s*|\s*[\])）]$/g, '').trim();
 
 function isUnitLike(value) {
   let t = stripUnitBrackets(value).toLowerCase();
@@ -230,10 +215,10 @@ function isUnitLike(value) {
     || /^(?:m|μ|u|k|milli)?(?:v|a|pa|bar|s|hz)$/i.test(t);
 }
 
-function normalizeUnit(value) {
+const normalizeUnit = value => {
   const unit = stripUnitBrackets(value);
   return isUnitLike(unit) ? unit : '';
-}
+};
 
 function splitHeaderNameUnit(rawName, rawUnit = '') {
   let name = cleanName(rawName);
@@ -307,9 +292,7 @@ async function loadFile(file) {
   }
 }
 
-function updateParseProgress(message) {
-  if (els.fileMeta) els.fileMeta.textContent = message;
-}
+const updateParseProgress = message => { els.fileMeta.textContent = message; };
 
 function parseFileData(file, data) {
   const isTextTable = /\.(csv|txt|tsv)$/i.test(file.name);
@@ -361,12 +344,7 @@ function parseFileData(file, data) {
   return best.parsed;
 }
 
-function delimiterName(delimiter) {
-  if (delimiter === '\t') return 'TSV';
-  if (delimiter === ';') return 'semicolon CSV';
-  if (delimiter === '|') return 'pipe table';
-  return 'comma CSV';
-}
+const delimiterName = delimiter => ({ '\t': 'TSV', ';': 'semicolon CSV', '|': 'pipe table' }[delimiter] || 'comma CSV');
 
 function guessDelimiter(text) {
   const lines = String(text).split(/\r?\n/).map(line => line.trim()).filter(Boolean).slice(0, 40);
@@ -666,26 +644,43 @@ function makeMeasure({ name, unit, values, color }) {
     color,
     group: groupFor(name, unit),
     visible: true,
-    normalized: buildAdaptiveWaveValues(values, nums, min, max)
+    normalized: []
   };
 }
 
-function buildAdaptiveWaveValues(values, nums, min, max) {
-  const range = max - min;
-  if (!range) return values.map(v => v === null ? null : 50);
+function rebuildNormalizedValues(items) {
+  const buckets = new Map();
+  for (const m of items) {
+    const key = normalizationKey(m);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(m);
+  }
 
-  const center = median(nums);
-  const medianAbs = median(nums.map(v => Math.abs(v)));
-  const magnitude = Math.max(Math.abs(center), medianAbs, range * 0.35, 1e-9);
-  const relativeWindow = 0.12;
-  const compressionBase = Math.log1p(1 / relativeWindow);
+  for (const bucketItems of buckets.values()) {
+    const nums = bucketItems
+      .flatMap(m => m.values)
+      .filter(v => v !== null && Number.isFinite(v));
+    const min = Math.min(...nums);
+    const max = Math.max(...nums);
+    for (const m of bucketItems) {
+      m.normalized = buildMonotonicSharedScaleValues(m.values, min, max);
+    }
+  }
+}
+
+function normalizationKey(measure) {
+  const unit = stripUnitBrackets(measure.unit || '').toLowerCase();
+  return unit ? `unit|${unit}` : 'unit|unitless';
+}
+
+function buildMonotonicSharedScaleValues(values, min, max) {
+  const range = max - min;
+  if (!Number.isFinite(range) || range <= 0) return values.map(v => v === null ? null : 50);
 
   return values.map(v => {
     if (v === null || !Number.isFinite(v)) return null;
-    const relativeDelta = (v - center) / magnitude;
-    const signedCompressed = Math.sign(relativeDelta)
-      * (Math.log1p(Math.abs(relativeDelta) / relativeWindow) / compressionBase);
-    return clamp(50 + signedCompressed * 45, 2, 98);
+    const ratio = clamp((v - min) / range, 0, 1);
+    return 2 + ratio * 96;
   });
 }
 
@@ -700,15 +695,25 @@ function groupFor(name, unit = '') {
 }
 
 function setData(newMeasures, labels) {
+  rebuildNormalizedValues(newMeasures);
   measures = newMeasures;
   sampleLabels = labels;
   syncToggleAllButton();
   els.emptyState.style.display = 'none';
   hideCoordinateTooltip(true);
+  renderViews();
+}
+
+function renderViews() {
   renderMeasureControls();
   renderChart();
   renderStats();
   renderDataTable();
+}
+
+function refreshAfterVisibilityChange() {
+  hideCoordinateTooltip(true);
+  renderViews();
 }
 
 function renderMeasureControls() {
@@ -733,8 +738,7 @@ function renderMeasureControls() {
     const groupToggle = wrap.querySelector('.group-toggle');
     groupToggle.addEventListener('change', () => {
       groupItems.forEach(m => { m.visible = groupToggle.checked; });
-      hideCoordinateTooltip(true);
-      renderMeasureControls(); renderChart(); renderStats(); renderDataTable();
+      refreshAfterVisibilityChange();
     });
 
     for (const m of groupItems) {
@@ -749,8 +753,7 @@ function renderMeasureControls() {
       `;
       item.addEventListener('click', () => {
         m.visible = !m.visible;
-        hideCoordinateTooltip(true);
-        renderMeasureControls(); renderChart(); renderStats(); renderDataTable();
+        refreshAfterVisibilityChange();
       });
       wrap.appendChild(item);
     }
@@ -760,16 +763,11 @@ function renderMeasureControls() {
 
 function groupMeasures(items) {
   const byGroup = new Map();
-  for (const m of items) {
-    if (!byGroup.has(m.group)) byGroup.set(m.group, []);
-    byGroup.get(m.group).push(m);
-  }
+  for (const m of items) byGroup.set(m.group, [...(byGroup.get(m.group) || []), m]);
   return byGroup;
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>'"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[ch]));
-}
+const escapeHtml = s => String(s).replace(/[&<>'"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[ch]));
 
 function themeColors() {
   return currentTheme === 'dark'
@@ -1022,7 +1020,7 @@ function renderDataTable() {
     if (items.length) groups.push({ name: groupName, items });
   }
   const flat = groups.flatMap(g => g.items);
-  const headerGroups = groups.map(g => `<th class="dt-group" colspan="${g.items.length}">${escapeHtml(g.name)}</th>`).join('');
+  const headerGroups = groups.map(g => `<th colspan="${g.items.length}">${escapeHtml(g.name)}</th>`).join('');
   const headerMeasures = flat.map(m => `
     <th class="dt-measure" style="color:${m.color}">
       <span>${escapeHtml(m.name)}</span>
@@ -1083,29 +1081,17 @@ function renderStats() {
   `;
 }
 
-function isDrawerOpen() {
-  return els.controlDrawer.classList.contains('open');
-}
-
-function openDrawer() {
-  document.body.classList.add('drawer-open');
-  els.controlDrawer.classList.add('open');
-  els.drawerToggle.classList.add('open');
-  els.controlDrawer.setAttribute('aria-hidden', 'false');
+function setDrawerOpen(open) {
+  document.body.classList.toggle('drawer-open', open);
+  els.controlDrawer.classList.toggle('open', open);
+  els.drawerToggle.classList.toggle('open', open);
+  els.controlDrawer.setAttribute('aria-hidden', String(!open));
   setTimeout(() => chart?.resize(), 240);
 }
 
-function closeDrawer() {
-  document.body.classList.remove('drawer-open');
-  els.controlDrawer.classList.remove('open');
-  els.drawerToggle.classList.remove('open');
-  els.controlDrawer.setAttribute('aria-hidden', 'true');
-  setTimeout(() => chart?.resize(), 240);
-}
+function closeDrawer() { setDrawerOpen(false); }
 
-function toggleDrawer() {
-  isDrawerOpen() ? closeDrawer() : openDrawer();
-}
+function toggleDrawer() { setDrawerOpen(!els.controlDrawer.classList.contains('open')); }
 
 
 function exportVisibleCsv() {
@@ -1158,8 +1144,7 @@ function syncToggleAllButton() {
 els.toggleAllBtn.addEventListener('click', () => {
   const shouldHide = measures.some(m => m.visible);
   measures.forEach(m => { m.visible = !shouldHide; });
-  hideCoordinateTooltip(true);
-  renderMeasureControls(); renderChart(); renderStats(); renderDataTable();
+  refreshAfterVisibilityChange();
 });
 els.dataTableToggle.addEventListener('click', toggleDataTable);
 els.exportCsvBtn.addEventListener('click', exportVisibleCsv);
