@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "ecu-log-viewer",
+  "outputfilename": "ECU Log Viewer",
+  "frontend:dir": ".",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build:web",
+  "frontend:dev:watcher": "npm run dev:web",
+  "frontend:dev:serverUrl": "http://localhost:5173",
+  "author": {
+    "name": "pphua"
+  },
+  "info": {
+    "productName": "ECU Log Viewer",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2026 pphua",
+    "comments": "Lightweight ECU LOG data stream viewer for CSV and XLSX files."
+  }
+}

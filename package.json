@@ -1,0 +1,19 @@
+{
+  "name": "ecu-log-viewer",
+  "version": "1.0.0",
+  "description": "Lightweight ECU LOG data stream viewer",
+  "scripts": {
+    "build:web": "node scripts/build-web.mjs",
+    "dev:web": "node scripts/serve-web.mjs",
+    "wails:dev": "node scripts/wails-run.mjs dev -skipbindings",
+    "wails:build": "node scripts/wails-run.mjs build -skipbindings",
+    "wails:build:mac": "node scripts/wails-run.mjs build -skipbindings -platform darwin/universal",
+    "wails:build:windows": "node scripts/wails-run.mjs build -skipbindings -platform windows/amd64 -nsis -webview2 download"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {},
+  "private": true
+}
