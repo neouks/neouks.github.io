@@ -39,10 +39,30 @@ const els = {
   exportCsvBtn: document.getElementById('exportCsvBtn'),
   chartTitle: document.getElementById('chartTitle'),
   emptyState: document.getElementById('emptyState'),
-  canvasWrap: document.getElementById('canvasWrap')
+  canvasWrap: document.getElementById('canvasWrap'),
+  aiTranslateCard: document.getElementById('aiTranslateCard'),
+  aiTranslateToggle: document.getElementById('aiTranslateToggle'),
+  aiPanelClose: document.getElementById('aiPanelClose'),
+  aiTranslateBody: document.getElementById('aiTranslateBody'),
+  aiConfigToggle: document.getElementById('aiConfigToggle'),
+  aiConfigPanel: document.getElementById('aiConfigPanel'),
+  aiProvider: document.getElementById('aiProvider'),
+  aiEndpoint: document.getElementById('aiEndpoint'),
+  aiApiKey: document.getElementById('aiApiKey'),
+  aiModel: document.getElementById('aiModel'),
+  aiCustomModelRow: document.getElementById('aiCustomModelRow'),
+  aiCustomModel: document.getElementById('aiCustomModel'),
+  aiSourceLang: document.getElementById('aiSourceLang'),
+  aiTargetLang: document.getElementById('aiTargetLang'),
+  testApiBtn: document.getElementById('testApiBtn'),
+  listModelsBtn: document.getElementById('listModelsBtn'),
+  translateMeasuresBtn: document.getElementById('translateMeasuresBtn'),
+  clearTranslationsBtn: document.getElementById('clearTranslationsBtn'),
+  translationStatus: document.getElementById('translationStatus')
 };
 
 let currentTheme = localStorage.getItem('log-viewer-theme') || 'light';
+let measureTranslationCache = loadJson('log-viewer-measure-translations', {});
 let resizeFrame = 0;
 let globalRenderFrame = 0;
 let pendingSlotId = 'primary';
@@ -50,6 +70,17 @@ let activeTooltipSlotId = 'primary';
 const MAX_CHART_POINTS = 1800;
 const MAX_NAVIGATOR_POINTS = 900;
 const MAX_TABLE_ROWS = 900;
+const MEASURE_HORIZONTAL_THRESHOLD = 35;
+const AI_PROVIDERS = {
+  deepseek: { label: 'DeepSeek', endpoint: 'https://api.deepseek.com', model: 'deepseek-v4-flash', models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat'], keyPrefix: 'sk-', mode: 'openai' },
+  glm: { label: 'GLM / 智谱', endpoint: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash', models: ['glm-4-flash', 'glm-4', 'glm-4-plus', 'glm-4-air'], keyPrefix: '', mode: 'openai' },
+  deepl: { label: 'DeepL', endpoint: 'https://api-free.deepl.com/v2', model: 'deepl-translate', models: ['deepl-translate'], keyPrefix: '', mode: 'deepl' },
+  openai: { label: 'OpenAI', endpoint: 'https://api.openai.com/v1', model: 'gpt-4o-mini', models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini'], keyPrefix: 'sk-', mode: 'openai' },
+  gemini: { label: 'Gemini', endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.0-flash', models: ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'], keyPrefix: '', mode: 'openai' },
+  grok: { label: 'Grok / xAI', endpoint: 'https://api.x.ai/v1', model: 'grok-3-mini', models: ['grok-3-mini', 'grok-3', 'grok-2-latest'], keyPrefix: 'xai-', mode: 'openai' },
+  custom: { label: 'OpenAI兼容', endpoint: '', model: '', models: [], keyPrefix: '', mode: 'openai' }
+};
+const DEFAULT_AI_PROVIDER = 'deepseek';
 
 const slotOrder = ['primary', 'compare'];
 const slotLabels = { primary: 'LOG A', compare: 'LOG B' };
@@ -141,6 +172,8 @@ if (window.Chart) {
 }
 
 applyTheme(currentTheme, false);
+initAiTranslationControls();
+initCustomSelects();
 
 function fmt(v, digits = 3) {
   if (v === null || v === undefined || Number.isNaN(v)) return '-';
@@ -177,6 +210,561 @@ function toggleTheme() {
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+
+function loadJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignore storage quota or private mode failures.
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>'"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[ch]));
+}
+
+function initAiTranslationControls() {
+  const savedProvider = localStorage.getItem('log-viewer-ai-provider') || DEFAULT_AI_PROVIDER;
+  const provider = AI_PROVIDERS[savedProvider] ? savedProvider : DEFAULT_AI_PROVIDER;
+  const savedEndpoint = localStorage.getItem('log-viewer-ai-endpoint') || '';
+  const savedModel = localStorage.getItem('log-viewer-ai-model') || '';
+  const savedSourceLang = localStorage.getItem('log-viewer-ai-source-lang') || 'auto';
+  const savedTargetLang = localStorage.getItem('log-viewer-ai-target-lang') || 'zh';
+  if (els.aiProvider) els.aiProvider.value = provider;
+  if (els.aiEndpoint) {
+    els.aiEndpoint.value = !savedEndpoint || savedEndpoint === 'https://api.openai.com/v1'
+      ? AI_PROVIDERS[provider].endpoint
+      : savedEndpoint;
+  }
+  updateModelOptions(loadJson(`log-viewer-ai-models-${provider}`, AI_PROVIDERS[provider].models || []), savedModel || AI_PROVIDERS[provider].model);
+  if (els.aiModel) {
+    els.aiModel.value = !savedModel || savedModel === 'gpt-4o-mini'
+      ? AI_PROVIDERS[provider].model
+      : savedModel;
+  }
+  if (els.aiSourceLang) els.aiSourceLang.value = savedSourceLang;
+  if (els.aiTargetLang) els.aiTargetLang.value = savedTargetLang;
+  if (els.aiCustomModel) els.aiCustomModel.value = localStorage.getItem('log-viewer-ai-custom-model') || '';
+  if (els.aiApiKey) els.aiApiKey.value = localStorage.getItem('log-viewer-ai-key') || '';
+  applyProviderPreset(false);
+  updateCustomModelVisibility();
+  setAiConfigOpen(localStorage.getItem('log-viewer-ai-config-open') === 'true');
+}
+
+function persistAiConfig() {
+  if (els.aiProvider) localStorage.setItem('log-viewer-ai-provider', els.aiProvider.value);
+  if (els.aiEndpoint) localStorage.setItem('log-viewer-ai-endpoint', els.aiEndpoint.value.trim());
+  if (els.aiModel) localStorage.setItem('log-viewer-ai-model', els.aiModel.value.trim());
+  if (els.aiCustomModel) localStorage.setItem('log-viewer-ai-custom-model', els.aiCustomModel.value.trim());
+  if (els.aiSourceLang) localStorage.setItem('log-viewer-ai-source-lang', els.aiSourceLang.value);
+  if (els.aiTargetLang) localStorage.setItem('log-viewer-ai-target-lang', els.aiTargetLang.value);
+  if (els.aiApiKey) localStorage.setItem('log-viewer-ai-key', els.aiApiKey.value.trim());
+}
+
+function getWailsApp() {
+  return window.go?.main?.App || null;
+}
+
+function currentProviderConfig() {
+  const provider = els.aiProvider?.value || DEFAULT_AI_PROVIDER;
+  return AI_PROVIDERS[provider] || AI_PROVIDERS[DEFAULT_AI_PROVIDER];
+}
+
+function applyProviderPreset(overwrite = true) {
+  const config = currentProviderConfig();
+  if (els.aiEndpoint && (overwrite || !els.aiEndpoint.value.trim())) els.aiEndpoint.value = config.endpoint;
+  if (overwrite) updateModelOptions(loadJson(`log-viewer-ai-models-${els.aiProvider.value}`, config.models || []), config.model);
+  if (els.aiModel && (overwrite || !els.aiModel.value.trim())) ensureModelOption(config.model);
+  if (els.aiApiKey) els.aiApiKey.placeholder = config.keyPrefix ? `${config.keyPrefix}...` : 'API Key';
+  persistAiConfig();
+  [els.aiProvider, els.aiModel, els.aiSourceLang, els.aiTargetLang].forEach(syncCustomSelect);
+}
+
+function buildAiPayload(extra = {}) {
+  const provider = els.aiProvider?.value || DEFAULT_AI_PROVIDER;
+  return {
+    provider,
+    mode: currentProviderConfig().mode,
+    endpoint: els.aiEndpoint?.value.trim() || '',
+    apiKey: els.aiApiKey?.value.trim() || '',
+    model: selectedAiModel(),
+    sourceLang: els.aiSourceLang?.value || 'auto',
+    targetLang: els.aiTargetLang?.value || 'zh',
+    ...extra
+  };
+}
+
+function selectedAiModel() {
+  return els.aiModel?.value === '__custom__'
+    ? (els.aiCustomModel?.value.trim() || '')
+    : (els.aiModel?.value.trim() || '');
+}
+
+function updateCustomModelVisibility() {
+  const custom = els.aiModel?.value === '__custom__';
+  if (els.aiCustomModelRow) els.aiCustomModelRow.hidden = !custom;
+}
+
+function langLabel(code) {
+  return {
+    auto: '自动识别',
+    zh: '中文',
+    en: '英语',
+    ja: '日语',
+    de: '德语',
+    fr: '法语',
+    es: '西班牙语',
+    ko: '韩语',
+    ru: '俄语'
+  }[code] || code;
+}
+
+function translationDirection(payload) {
+  const source = payload.sourceLang === 'auto' ? '自动识别源语言' : `从${langLabel(payload.sourceLang)}`;
+  return `${source}翻译为${langLabel(payload.targetLang || 'zh')}`;
+}
+
+function setTranslationStatus(message, type = '') {
+  if (!els.translationStatus) return;
+  els.translationStatus.textContent = message;
+  els.translationStatus.className = `translation-status ${type}`.trim();
+}
+
+function setAiTranslateOpen(open) {
+  if (!els.aiTranslateCard) return;
+  els.aiTranslateCard.classList.toggle('collapsed', !open);
+  els.aiTranslateCard.setAttribute('aria-hidden', String(!open));
+  els.aiTranslateToggle?.setAttribute('aria-expanded', String(open));
+  els.aiTranslateToggle?.setAttribute('aria-label', open ? '收起AI翻译' : '打开AI翻译');
+}
+
+function toggleAiTranslatePanel() {
+  setAiTranslateOpen(els.aiTranslateCard?.classList.contains('collapsed'));
+}
+
+function setAiConfigOpen(open) {
+  const next = !!open;
+  if (els.aiConfigPanel) els.aiConfigPanel.hidden = !next;
+  if (els.aiConfigToggle) {
+    els.aiConfigToggle.classList.toggle('active', next);
+    els.aiConfigToggle.setAttribute('aria-expanded', String(next));
+  }
+  try {
+    localStorage.setItem('log-viewer-ai-config-open', String(next));
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function toggleAiConfigPanel() {
+  setAiConfigOpen(els.aiConfigPanel?.hidden);
+}
+
+function originalMeasureName(measure) {
+  return measure.originalName || measure.name || '';
+}
+
+function activeTranslationScope() {
+  return {
+    sourceLang: els.aiSourceLang?.value || localStorage.getItem('log-viewer-ai-source-lang') || 'auto',
+    targetLang: els.aiTargetLang?.value || localStorage.getItem('log-viewer-ai-target-lang') || 'zh'
+  };
+}
+
+function translationCacheKey(name, sourceLang = activeTranslationScope().sourceLang, targetLang = activeTranslationScope().targetLang) {
+  return `${sourceLang || 'auto'}->${targetLang || 'zh'}|${compactText(name)}`;
+}
+
+function displayMeasureName(measure) {
+  const original = originalMeasureName(measure);
+  const scoped = measureTranslationCache[translationCacheKey(original)];
+  const legacy = activeTranslationScope().sourceLang === 'auto' && activeTranslationScope().targetLang === 'zh'
+    ? measureTranslationCache[original]
+    : '';
+  return scoped || measure.displayName || legacy || measure.name || '';
+}
+
+function applyCachedTranslations(measures) {
+  for (const measure of measures) {
+    const original = originalMeasureName(measure);
+    measure.displayName = measureTranslationCache[translationCacheKey(original)] || '';
+  }
+}
+
+function applyTranslationsToAll(translations, payload = buildAiPayload()) {
+  let changed = 0;
+  for (const [source, target] of Object.entries(translations || {})) {
+    const key = compactText(source);
+    const value = compactText(target);
+    if (!key || !value || key === value) continue;
+    measureTranslationCache[translationCacheKey(key, payload.sourceLang, payload.targetLang)] = value;
+    changed++;
+  }
+  saveJson('log-viewer-measure-translations', measureTranslationCache);
+  applyCachedTranslations(allMeasures());
+  if (changed) refreshAfterTranslationChange();
+  return changed;
+}
+
+function handleTranslationLanguageChange() {
+  persistAiConfig();
+  applyCachedTranslations(allMeasures());
+  refreshAfterTranslationChange();
+}
+
+function refreshAfterTranslationChange() {
+  renderGlobalViews({ immediate: true });
+  for (const slot of activeSlots()) {
+    renderChart(slot);
+    renderNavigator(slot);
+    if (slot.tooltipState.pinned && slot.tooltipState.dataIndex >= 0) {
+      showTooltipAtDataIndex(slot, slot.tooltipState.dataIndex);
+    }
+  }
+}
+
+async function translateMeasureNames() {
+  const measures = allMeasures();
+  if (!measures.length) {
+    setTranslationStatus('请先上传日志文件后再翻译。', 'error');
+    return;
+  }
+
+  persistAiConfig();
+  const basePayload = buildAiPayload();
+  if (!basePayload.endpoint || !basePayload.apiKey || (!basePayload.model && basePayload.mode !== 'deepl')) {
+    setTranslationStatus('请先展开模型配置并填写 API 地址、API Key 和模型。', 'error');
+    return;
+  }
+
+  const names = [...new Set(measures.map(originalMeasureName).map(compactText).filter(Boolean))]
+    .filter(name => !measureTranslationCache[translationCacheKey(name, basePayload.sourceLang, basePayload.targetLang)]);
+  if (!names.length) {
+    setTranslationStatus('所有数据流已有翻译缓存。', 'success');
+    applyCachedTranslations(measures);
+    refreshAfterTranslationChange();
+    return;
+  }
+
+  const batches = chunkArray(names, 80);
+  let changed = 0;
+  els.translateMeasuresBtn.disabled = true;
+  try {
+    for (let i = 0; i < batches.length; i++) {
+      setTranslationStatus(`正在翻译第 ${i + 1}/${batches.length} 批，共 ${names.length} 个数据流名称...`);
+      const translations = await requestAiTranslations({ ...basePayload, names: batches[i] });
+      changed += applyTranslationsToAll(translations, basePayload);
+      await nextFrame();
+    }
+    setTranslationStatus(`翻译完成，已更新 ${changed} 个数据流名称。`, 'success');
+  } catch (error) {
+    setTranslationStatus(error?.message || '翻译失败，请检查 API 配置。', 'error');
+  } finally {
+    els.translateMeasuresBtn.disabled = false;
+  }
+}
+
+async function testAiApi() {
+  persistAiConfig();
+  const payload = buildAiPayload({ names: ['Engine speed', 'Boost pressure actual value'] });
+  if (!payload.endpoint || !payload.apiKey || (!payload.model && payload.mode !== 'deepl')) {
+    setTranslationStatus('请先填写 API 地址、API Key 和模型。', 'error');
+    return;
+  }
+  els.testApiBtn.disabled = true;
+  setTranslationStatus('正在测试 API...');
+  try {
+    const wailsApp = getWailsApp();
+    let message = '';
+    if (wailsApp?.TestAIAPI) {
+      const response = await wailsApp.TestAIAPI(payload);
+      message = response?.message || response?.Message || 'API 测试成功';
+    } else {
+      const translations = await requestAiTranslations(payload);
+      message = Object.keys(translations).length ? 'API 测试成功，翻译接口可用。' : 'API 可连接，但未返回翻译内容。';
+    }
+    setTranslationStatus(message, 'success');
+  } catch (error) {
+    setTranslationStatus(error?.message || 'API 测试失败。', 'error');
+  } finally {
+    els.testApiBtn.disabled = false;
+  }
+}
+
+async function listAiModels() {
+  persistAiConfig();
+  const payload = buildAiPayload();
+  if (!payload.endpoint || !payload.apiKey) {
+    setTranslationStatus('请先填写 API 地址和 API Key。', 'error');
+    return;
+  }
+  els.listModelsBtn.disabled = true;
+  setTranslationStatus('正在获取可用模型...');
+  try {
+    const models = await requestAiModels(payload);
+    updateModelOptions(models);
+    if (models.length) {
+      saveJson(`log-viewer-ai-models-${payload.provider}`, models);
+      if (!els.aiModel.value.trim() || !models.includes(els.aiModel.value.trim())) els.aiModel.value = models[0];
+      syncCustomSelect(els.aiModel);
+      persistAiConfig();
+      setTranslationStatus(`获取到 ${models.length} 个模型：${models.slice(0, 6).join('、')}${models.length > 6 ? '...' : ''}`, 'success');
+    } else {
+      setTranslationStatus('未获取到模型列表，请手动填写模型名。', 'error');
+    }
+  } catch (error) {
+    setTranslationStatus(error?.message || '获取模型列表失败。', 'error');
+  } finally {
+    els.listModelsBtn.disabled = false;
+  }
+}
+
+async function requestAiModels(payload) {
+  const wailsApp = getWailsApp();
+  if (wailsApp?.ListAIModels) {
+    const response = await wailsApp.ListAIModels(payload);
+    return response?.models || response?.Models || [];
+  }
+  if (payload.mode === 'deepl' || payload.provider === 'deepl') return ['deepl-translate'];
+  const response = await fetch(normalizeModelsEndpoint(payload.endpoint), {
+    headers: { Authorization: `Bearer ${payload.apiKey}` }
+  });
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`获取模型失败：HTTP ${response.status} ${raw.slice(0, 180)}`);
+  const data = JSON.parse(raw);
+  return (data.data || []).map(item => item.id).filter(Boolean);
+}
+
+function updateModelOptions(models) {
+  if (!els.aiModel) return;
+  const current = els.aiModel.value;
+  const unique = [...new Set((models || []).map(compactText).filter(Boolean))];
+  els.aiModel.innerHTML = [
+    ...unique.map(model => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`),
+    '<option value="__custom__">手动输入模型...</option>'
+  ].join('');
+  if (current) ensureModelOption(current);
+  updateCustomModelVisibility();
+  syncCustomSelect(els.aiModel);
+}
+
+function ensureModelOption(model) {
+  if (!els.aiModel || !model) return;
+  const exists = [...els.aiModel.options].some(option => option.value === model);
+  if (!exists) {
+    const option = document.createElement('option');
+    option.value = model;
+    option.textContent = model;
+    const customOption = [...els.aiModel.options].find(item => item.value === '__custom__');
+    els.aiModel.insertBefore(option, customOption || null);
+  }
+  els.aiModel.value = model;
+  updateCustomModelVisibility();
+  syncCustomSelect(els.aiModel);
+}
+
+function initCustomSelects() {
+  const selects = [els.aiProvider, els.aiModel, els.aiSourceLang, els.aiTargetLang].filter(Boolean);
+  for (const select of selects) enhanceSelect(select);
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.sh-select-wrap')) closeAllCustomSelects();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeAllCustomSelects();
+  });
+}
+
+function enhanceSelect(select) {
+  if (!select || select.dataset.enhanced === 'true') return;
+  select.dataset.enhanced = 'true';
+  select.classList.add('native-select');
+  const wrap = document.createElement('div');
+  wrap.className = 'sh-select-wrap';
+  select.parentNode.insertBefore(wrap, select);
+  wrap.appendChild(select);
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'sh-select-trigger';
+  button.innerHTML = '<span></span><i aria-hidden="true"></i>';
+  button.setAttribute('aria-haspopup', 'listbox');
+  button.setAttribute('aria-expanded', 'false');
+  wrap.appendChild(button);
+
+  const menu = document.createElement('div');
+  menu.className = 'sh-select-menu';
+  menu.setAttribute('role', 'listbox');
+  wrap.appendChild(menu);
+
+  button.addEventListener('click', e => {
+    e.preventDefault();
+    const open = wrap.classList.contains('open');
+    closeAllCustomSelects();
+    wrap.classList.toggle('open', !open);
+    button.setAttribute('aria-expanded', String(!open));
+    if (!open) renderSelectMenu(select);
+  });
+
+  select.addEventListener('change', () => syncCustomSelect(select));
+  syncCustomSelect(select);
+}
+
+function closeAllCustomSelects() {
+  document.querySelectorAll('.sh-select-wrap.open').forEach(item => {
+    item.classList.remove('open');
+    item.querySelector('.sh-select-trigger')?.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function syncCustomSelect(select) {
+  const wrap = select?.closest?.('.sh-select-wrap');
+  if (!wrap) return;
+  const label = wrap.querySelector('.sh-select-trigger span');
+  const selected = select.options[select.selectedIndex];
+  if (label) label.textContent = selected?.textContent || select.value || '请选择';
+  renderSelectMenu(select);
+}
+
+function renderSelectMenu(select) {
+  const wrap = select?.closest?.('.sh-select-wrap');
+  if (!wrap) return;
+  const menu = wrap.querySelector('.sh-select-menu');
+  if (!menu) return;
+  menu.innerHTML = '';
+  [...select.options].forEach(option => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `sh-select-option ${option.value === select.value ? 'selected' : ''}`;
+    item.textContent = option.textContent;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', String(option.value === select.value));
+    item.addEventListener('click', e => {
+      e.preventDefault();
+      select.value = option.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      closeAllCustomSelects();
+    });
+    menu.appendChild(item);
+  });
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+  return chunks;
+}
+
+async function requestAiTranslations(payload) {
+  const wailsApp = getWailsApp();
+  if (wailsApp?.TranslateMeasureNames) {
+    const response = await wailsApp.TranslateMeasureNames(payload);
+    return response?.translations || response?.Translations || {};
+  }
+  if (payload.mode === 'deepl' || payload.provider === 'deepl') {
+    return requestDeepLTranslations(payload);
+  }
+
+  const url = normalizeAiEndpoint(payload.endpoint);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${payload.apiKey}`
+    },
+    body: JSON.stringify({
+      model: payload.model,
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: `你是汽车ECU数据流字段翻译助手。请${translationDirection(payload)}，输出简洁专业译名，保留缩写、传感器编号、单位、实际值/规定值含义。只返回JSON对象，格式为 {"translations":{"原文":"译文"}}，不要输出解释。${payload.prompt ? `额外要求：${payload.prompt}` : ''}`
+        },
+        {
+          role: 'user',
+          content: `请${translationDirection(payload)}以下ECU日志数据流字段名。返回JSON对象：{"translations":{"原文":"译文"}}。\n字段列表：${JSON.stringify(payload.names)}`
+        }
+      ]
+    })
+  });
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`AI API 请求失败：HTTP ${response.status} ${raw.slice(0, 180)}`);
+  const data = JSON.parse(raw);
+  const content = data?.choices?.[0]?.message?.content || '';
+  const parsed = parseTranslationContent(content);
+  return parsed.translations || parsed;
+}
+
+async function requestDeepLTranslations(payload) {
+  const url = `${payload.endpoint.replace(/\/+$/, '')}/translate`;
+  const body = new URLSearchParams();
+  const target = deeplLangCode(payload.targetLang || 'zh');
+  const source = deeplLangCode(payload.sourceLang || 'auto');
+  body.set('target_lang', target);
+  if (source !== 'AUTO') body.set('source_lang', source);
+  for (const name of payload.names) body.append('text', name);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `DeepL-Auth-Key ${payload.apiKey}` },
+    body
+  });
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`DeepL 请求失败：HTTP ${response.status} ${raw.slice(0, 180)}`);
+  const data = JSON.parse(raw);
+  const result = {};
+  (data.translations || []).forEach((item, index) => {
+    if (payload.names[index] && item.text) result[payload.names[index]] = item.text;
+  });
+  return result;
+}
+
+function deeplLangCode(code) {
+  return {
+    auto: 'AUTO',
+    zh: 'ZH',
+    en: 'EN',
+    ja: 'JA',
+    de: 'DE',
+    fr: 'FR',
+    es: 'ES',
+    ko: 'KO',
+    ru: 'RU'
+  }[code] || String(code || 'ZH').toUpperCase();
+}
+
+function normalizeAiEndpoint(endpoint) {
+  const trimmed = endpoint.trim().replace(/\/+$/, '');
+  return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`;
+}
+
+function normalizeModelsEndpoint(endpoint) {
+  const trimmed = endpoint.trim().replace(/\/+$/, '');
+  if (trimmed.endsWith('/models')) return trimmed;
+  if (trimmed.endsWith('/chat/completions')) return `${trimmed.slice(0, -'/chat/completions'.length)}/models`;
+  return `${trimmed}/models`;
+}
+
+function parseTranslationContent(content) {
+  const text = String(content || '').trim().replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+  if (!text) return {};
+  return JSON.parse(text);
+}
+
+function clearTranslations() {
+  for (const measure of allMeasures()) measure.displayName = '';
+  refreshAfterTranslationChange();
+  setTranslationStatus('已清除当前翻译显示，再次翻译时将优先使用缓存。');
+}
 
 function cleanName(name) {
   return String(name ?? '')
@@ -712,6 +1300,8 @@ function makeMeasure({ name, unit, values, color }) {
   return {
     id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
     name,
+    originalName: compactText(name),
+    displayName: measureTranslationCache[compactText(name)] || '',
     unit: unit || '',
     values,
     min,
@@ -780,6 +1370,7 @@ function groupFor(name, unit = '') {
 
 function setData(slot, newMeasures, labels, sourceName, strategy = '') {
   rebuildNormalizedValues(newMeasures);
+  applyCachedTranslations(newMeasures);
   slot.measures = newMeasures.map(m => ({ ...m, slotId: slot.id, slotLabel: slot.label }));
   slot.sampleLabels = labels;
   slot.sourceName = sourceName;
@@ -908,7 +1499,7 @@ function renderMeasureControls() {
           <div class="color-dot" style="background:${m.color}"></div>
           <label>
             <input type="checkbox" ${m.visible ? 'checked' : ''} data-id="${m.id}">
-            <div class="measure-name" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
+            <div class="measure-name" title="${escapeHtml(displayMeasureName(m) === originalMeasureName(m) ? originalMeasureName(m) : `${displayMeasureName(m)} / ${originalMeasureName(m)}`)}">${escapeHtml(displayMeasureName(m))}</div>
           </label>
         `;
         item.addEventListener('click', () => {
@@ -928,8 +1519,6 @@ function groupMeasures(items) {
   for (const m of items) byGroup.set(m.group, [...(byGroup.get(m.group) || []), m]);
   return byGroup;
 }
-
-const escapeHtml = s => String(s).replace(/[&<>'"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[ch]));
 
 function themeColors() {
   return currentTheme === 'dark'
@@ -1031,7 +1620,7 @@ function renderChart(slot) {
   const win = sampledWindow(slot);
   slot.chartRawIndices = win.rawIndices;
   const datasets = visible.map(m => ({
-    label: `${m.name}${m.unit ? ` (${m.unit})` : ''}`,
+    label: `${displayMeasureName(m)}${m.unit ? ` (${m.unit})` : ''}`,
     data: win.rawIndices.map(index => m.normalized[index]),
     borderColor: m.color,
     backgroundColor: m.color,
@@ -1096,7 +1685,7 @@ function renderChart(slot) {
 function markerDataset(m, type, index, y, rawValue, win) {
   const inView = index >= win.start && index <= win.end;
   return {
-    label: `${m.name} ${type} ${fmt(rawValue)}`,
+    label: `${displayMeasureName(m)} ${type} ${fmt(rawValue)}`,
     data: win.rawIndices.map(rawIndex => inView && rawIndex === index ? y : null),
     borderColor: 'transparent',
     backgroundColor: m.color,
@@ -1253,6 +1842,7 @@ function renderCoordinateTooltip(slot, context) {
   if (!visible.length || effectiveIndex < 0) return;
   activeTooltipSlotId = slot.id;
   if (slot.tooltipState.renderedIndex !== effectiveIndex) {
+    applyTooltipLayout(slot, visible.length);
     panel.innerHTML = buildCoordinateTooltipHtml(effectiveIndex, visible);
     slot.tooltipState.renderedIndex = effectiveIndex;
     if (!slot.tooltipState.pinned || slot.tooltipState.programmatic) {
@@ -1272,6 +1862,10 @@ function hideCoordinateTooltip(slot, force = false) {
   if (slot.tooltipState.pinned && !force) return;
   if (force) slot.tooltipState.pinned = false;
   panel.classList.remove('show');
+  panel.classList.remove('horizontal-expanded');
+  panel.style.removeProperty('--tip-columns');
+  panel.style.removeProperty('width');
+  panel.style.removeProperty('max-width');
   panel.setAttribute('aria-hidden', 'true');
   slot.tooltipState.active = false;
   slot.tooltipState.dataIndex = -1;
@@ -1346,6 +1940,7 @@ function nearestChartLocalIndex(slot, dataIndex) {
 function renderManualTooltip(slot, dataIndex, caretX = null) {
   const visible = slot.measures.filter(m => m.visible);
   if (!slot.tooltip || !visible.length) return;
+  applyTooltipLayout(slot, visible.length);
   slot.tooltip.innerHTML = buildCoordinateTooltipHtml(dataIndex, visible);
   slot.tooltip.classList.add('show');
   slot.tooltip.setAttribute('aria-hidden', 'false');
@@ -1401,9 +1996,14 @@ function positionCoordinateTooltip(slot, chartInstance, tooltip) {
   const chartArea = chartInstance.chartArea || { top: 0, bottom: canvasBox.height };
   const viewportPadding = 8;
   const caretX = canvasBox.left + tooltip.caretX;
-  const maxWidth = Math.min(620, window.innerWidth - viewportPadding * 2);
+  const tooltipColumns = Number(panel?.style.getPropertyValue('--tip-columns') || 1) || 1;
+  const preferredWidth = tooltipColumns > 1
+    ? Math.min(360 * tooltipColumns + 36, 1280)
+    : 620;
+  const maxWidth = Math.min(preferredWidth, window.innerWidth - viewportPadding * 2);
 
   panel.style.maxWidth = `${maxWidth}px`;
+  panel.style.width = tooltipColumns > 1 ? `${maxWidth}px` : 'max-content';
   panel.style.left = '0px';
   panel.style.top = '0px';
 
@@ -1488,11 +2088,50 @@ function applyTooltipTransform(slot) {
   slot.tooltip.style.transform = `translate3d(${state.x}px, ${state.y}px, 0) scale(${state.scale})`;
 }
 
+function tooltipColumnCount(visibleCount) {
+  if (visibleCount <= MEASURE_HORIZONTAL_THRESHOLD) return 1;
+  return Math.min(4, Math.ceil(visibleCount / MEASURE_HORIZONTAL_THRESHOLD));
+}
+
+function applyTooltipLayout(slot, visibleCount) {
+  if (!slot.tooltip) return;
+  const columns = tooltipColumnCount(visibleCount);
+  slot.tooltip.classList.toggle('horizontal-expanded', columns > 1);
+  slot.tooltip.style.setProperty('--tip-columns', String(columns));
+}
+
+function distributeTooltipGroups(groups, columns) {
+  if (columns <= 1 || groups.length <= 1) return [groups];
+  const buckets = Array.from({ length: columns }, () => []);
+  const heights = Array.from({ length: columns }, () => 0);
+  const estimatedWeight = group => 1.4 + (group.items?.length || 0);
+
+  groups
+    .slice()
+    .sort((a, b) => estimatedWeight(b) - estimatedWeight(a))
+    .forEach(group => {
+      let targetIndex = 0;
+      let minHeight = heights[0];
+      for (let i = 1; i < heights.length; i++) {
+        if (heights[i] < minHeight) {
+          minHeight = heights[i];
+          targetIndex = i;
+        }
+      }
+      buckets[targetIndex].push(group);
+      heights[targetIndex] += estimatedWeight(group);
+    });
+
+  return buckets.filter(bucket => bucket.length);
+}
+
 function buildCoordinateTooltipHtml(dataIndex, visible) {
   const byGroup = groupMeasures(visible);
   const orderedGroups = knownGroups.map(g => g.name).filter(g => byGroup.has(g));
-  const groups = orderedGroups.map(group => {
-    const items = byGroup.get(group).map(m => {
+  const columns = tooltipColumnCount(visible.length);
+  const groups = orderedGroups.map(group => ({
+    name: group,
+    items: byGroup.get(group).map(m => {
       const value = m.values[dataIndex];
       const valueHtml = value === null || Number.isNaN(value)
         ? '<span class="tip-missing">-</span>'
@@ -1501,23 +2140,30 @@ function buildCoordinateTooltipHtml(dataIndex, visible) {
         <div class="tip-row" style="--series-color:${m.color}">
           ${valueHtml}
           <span class="tip-unit">${escapeHtml(m.unit || '-')}</span>
-          <span class="tip-name">${escapeHtml(m.name)}</span>
+          <span class="tip-name" title="${escapeHtml(displayMeasureName(m) === originalMeasureName(m) ? originalMeasureName(m) : `${displayMeasureName(m)} / ${originalMeasureName(m)}`)}">${escapeHtml(displayMeasureName(m))}</span>
         </div>
       `;
-    }).join('');
-    return `
+    })
+  }));
+
+  const groupColumns = distributeTooltipGroups(groups, columns);
+  const columnsHtml = groupColumns.map(columnGroups => {
+    const groupsHtml = columnGroups.map(group => `
       <section class="tip-group">
         <div class="tip-group-title">
-          <span>${escapeHtml(group)}</span>
-          <small>${byGroup.get(group).length}</small>
+          <span>${escapeHtml(group.name)}</span>
+          <small>${group.items.length}</small>
         </div>
-        ${items}
+        ${group.items.join('')}
       </section>
+    `).join('');
+    return `
+      <div class="tip-column">${groupsHtml}</div>
     `;
   }).join('');
 
   return `
-    <div class="tip-body">${groups}</div>
+    <div class="tip-body ${columns > 1 ? 'horizontal-expanded' : ''}">${columnsHtml}</div>
   `;
 }
 
@@ -1585,7 +2231,7 @@ function renderDataTable(force = false) {
   const headerGroups = groups.map(g => `<th colspan="${g.items.length}">${escapeHtml(g.name)}</th>`).join('');
   const headerMeasures = flat.map(m => `
     <th class="dt-measure" style="color:${m.color}">
-      <span>${escapeHtml(m.name)}</span>
+      <span title="${escapeHtml(displayMeasureName(m) === originalMeasureName(m) ? originalMeasureName(m) : `${displayMeasureName(m)} / ${originalMeasureName(m)}`)}">${escapeHtml(displayMeasureName(m))}</span>
       <small>[ ${escapeHtml(m.unit || '-')} ]</small>
     </th>
   `).join('');
@@ -1642,7 +2288,7 @@ function renderStats() {
     ${visible.map(m => `
       <div class="stat-row">
         <span class="stat-color" style="background:${m.color}"></span>
-        <span class="stat-name" title="${escapeHtml(isCompareMode() ? `${m.slotLabel} · ${m.name}` : m.name)}">${escapeHtml(isCompareMode() ? `${m.slotLabel} · ${m.name}` : m.name)}</span>
+        <span class="stat-name" title="${escapeHtml(isCompareMode() ? `${m.slotLabel} · ${displayMeasureName(m)} / ${originalMeasureName(m)}` : `${displayMeasureName(m)} / ${originalMeasureName(m)}`)}">${escapeHtml(isCompareMode() ? `${m.slotLabel} · ${displayMeasureName(m)}` : displayMeasureName(m))}</span>
         <span class="stat-value">${fmt(m.min)}</span>
         <span class="stat-value">${fmt(m.max)}</span>
         <span class="stat-value">${fmt(m.avg)}</span>
@@ -1794,6 +2440,23 @@ els.showExtrema.addEventListener('change', () => activeSlots().forEach(renderCha
 els.showPoints.addEventListener('change', () => activeSlots().forEach(renderChart));
 els.themeToggle?.addEventListener('click', toggleTheme);
 els.drawerToggle.addEventListener('click', toggleDrawer);
+els.aiTranslateToggle?.addEventListener('click', toggleAiTranslatePanel);
+els.aiPanelClose?.addEventListener('click', () => setAiTranslateOpen(false));
+els.aiConfigToggle?.addEventListener('click', toggleAiConfigPanel);
+els.aiProvider?.addEventListener('change', () => applyProviderPreset(true));
+els.testApiBtn?.addEventListener('click', testAiApi);
+els.listModelsBtn?.addEventListener('click', listAiModels);
+els.translateMeasuresBtn?.addEventListener('click', translateMeasureNames);
+els.clearTranslationsBtn?.addEventListener('click', clearTranslations);
+els.aiEndpoint?.addEventListener('change', persistAiConfig);
+els.aiApiKey?.addEventListener('change', persistAiConfig);
+els.aiModel?.addEventListener('change', () => {
+  updateCustomModelVisibility();
+  persistAiConfig();
+});
+els.aiCustomModel?.addEventListener('change', persistAiConfig);
+els.aiSourceLang?.addEventListener('change', handleTranslationLanguageChange);
+els.aiTargetLang?.addEventListener('change', handleTranslationLanguageChange);
 
 for (const slot of logSlots) {
   slot.zoomInButton.addEventListener('click', () => zoomX(slot, 0.75));
@@ -1833,6 +2496,7 @@ for (const slot of logSlots) {
 }
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
+    setAiTranslateOpen(false);
     closeDrawer();
     return;
   }

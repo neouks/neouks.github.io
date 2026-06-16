@@ -12,6 +12,7 @@ import (
 var assets embed.FS
 
 func main() {
+	app := NewApp()
 	err := wails.Run(&options.App{
 		Title:     "ECU Log Viewer",
 		Width:     1280,
@@ -22,6 +23,9 @@ func main() {
 			Assets: assets,
 		},
 		BackgroundColour: &options.RGBA{R: 255, G: 255, B: 255, A: 1},
+		Bind: []interface{}{
+			app,
+		},
 	})
 	if err != nil {
 		println("Error:", err.Error())
