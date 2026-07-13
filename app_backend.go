@@ -15,6 +15,10 @@ import (
 
 type App struct{}
 
+const maxAPIResponseBytes int64 = 4 << 20
+
+var aiHTTPClient = &http.Client{Timeout: 50 * time.Second}
+
 type TranslateRequest struct {
 	Provider   string   `json:"provider"`
 	Mode       string   `json:"mode"`
@@ -122,29 +126,26 @@ func (a *App) TranslateMeasureNames(req TranslateRequest) (*TranslateResponse, e
 		return nil, err
 	}
 
-	url := normalizeAIEndpoint(endpoint)
+	apiURL := normalizeAIEndpoint(endpoint)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := aiHTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	raw, err := readAPIResponse(resp, "AI API 请求失败")
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("AI API 请求失败：HTTP %d %s", resp.StatusCode, compactErrorBody(raw))
 	}
 
 	var completion chatCompletionResponse
@@ -209,18 +210,15 @@ func (a *App) ListAIModels(req TranslateRequest) (*ModelsResponse, error) {
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := aiHTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	raw, err := readAPIResponse(resp, "获取模型失败")
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("获取模型失败：HTTP %d %s", resp.StatusCode, compactErrorBody(raw))
 	}
 
 	var payload struct {
@@ -309,6 +307,9 @@ func normalizeAIEndpoint(endpoint string) string {
 	if strings.HasSuffix(url, "/chat/completions") {
 		return url
 	}
+	if strings.HasSuffix(url, "/models") {
+		url = strings.TrimSuffix(url, "/models")
+	}
 	return url + "/chat/completions"
 }
 
@@ -354,18 +355,15 @@ func translateWithDeepL(endpoint, apiKey, sourceLang, targetLang string, names [
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	httpReq.Header.Set("Authorization", "DeepL-Auth-Key "+apiKey)
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := aiHTTPClient.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	raw, err := readAPIResponse(resp, "DeepL 请求失败")
 	if err != nil {
 		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("DeepL 请求失败：HTTP %d %s", resp.StatusCode, compactErrorBody(raw))
 	}
 
 	var payload struct {
@@ -503,13 +501,25 @@ func cleanTranslations(input map[string]string) map[string]string {
 	return output
 }
 
+func readAPIResponse(resp *http.Response, errorPrefix string) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseBytes))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("%s：HTTP %d %s", errorPrefix, resp.StatusCode, compactErrorBody(raw))
+	}
+	return raw, nil
+}
+
 func compactErrorBody(raw []byte) string {
 	text := strings.TrimSpace(string(raw))
 	if text == "" {
 		return ""
 	}
-	if len(text) > 240 {
-		text = text[:240] + "..."
+	runes := []rune(text)
+	if len(runes) > 240 {
+		text = string(runes[:240]) + "..."
 	}
 	return text
 }

@@ -11,6 +11,9 @@
     <main class="main-layout">
       <section class="chart-card sh-card">
         <header class="chart-header">
+          <div id="appLogo" class="app-logo" hidden>
+            <img id="appLogoImage" alt="应用 LOGO" />
+          </div>
           <div class="chart-heading">
             <p class="eyebrow">ECU Log Viewer</p>
             <h1 id="chartTitle">LOG 对比</h1>
@@ -167,6 +170,40 @@
       </div>
       <div id="statsTable" class="stats-table empty">暂无数据</div>
     </section>
+    
+    <section class="appearance-panel sh-card">
+      <div class="panel-title-row">
+        <h2>外观</h2>
+        <span>图片</span>
+      </div>
+      <div class="asset-control">
+        <div>
+          <strong>数据流背景</strong>
+          <span id="backgroundStatus">使用默认网格背景</span>
+        </div>
+        <div class="asset-actions">
+          <label class="sh-button sh-button-secondary asset-upload-btn">
+            <input id="backgroundImageInput" type="file" accept="image/*" />
+            <span>上传图片</span>
+          </label>
+          <button id="clearBackgroundBtn" class="sh-button sh-button-secondary" type="button">清除</button>
+        </div>
+      </div>
+      <div class="asset-control">
+        <div>
+          <strong>左上角 LOGO</strong>
+          <span id="logoStatus">未设置 LOGO</span>
+        </div>
+        <div class="asset-actions">
+          <label class="sh-button sh-button-secondary asset-upload-btn">
+            <input id="logoImageInput" type="file" accept="image/*" />
+            <span>上传 LOGO</span>
+          </label>
+          <button id="clearLogoBtn" class="sh-button sh-button-secondary" type="button">清除</button>
+        </div>
+      </div>
+    </section>
+    <p class="drawer-author">开发作者：NEO</p>
   </aside>
 
   <section id="aiTranslateCard" class="ai-translate-card ai-floating-panel sh-card collapsed" aria-hidden="true">
@@ -183,7 +220,7 @@
         <button id="aiPanelClose" class="sh-button sh-button-secondary ai-panel-close" type="button" aria-label="收起AI翻译">收起</button>
       </div>
     </div>
-    <div id="aiTranslateBody" class="ai-collapsible">
+    <div class="ai-collapsible">
       <div id="aiConfigPanel" class="ai-config-panel" hidden>
         <div class="ai-field-grid">
           <label>
@@ -248,7 +285,7 @@
         </div>
       </div>
       <div class="ai-actions ai-actions-primary">
-        <button id="translateMeasuresBtn" class="sh-button sh-button-secondary" type="button">AI翻译数据流</button>
+        <button id="translateMeasuresBtn" class="sh-button sh-button-secondary" type="button">AI翻译</button>
         <button id="clearTranslationsBtn" class="sh-button sh-button-secondary" type="button">清除翻译</button>
       </div>
       <p id="translationStatus" class="translation-status">模型配置已折叠，可展开设置 API / 模型 后进行 AI 翻译。</p>
@@ -272,8 +309,6 @@
     </svg>
   </button>
 
-  <script src="./web-vendor/xlsx.full.min.js"></script>
-  <script src="./web-vendor/chart.umd.js"></script>
-  <script src="./app.js"></script>
+  <script type="module" src="./app.js"></script>
 </body>
 </html>

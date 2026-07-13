@@ -1,45 +1,5 @@
 export namespace main {
 	
-	export class AIAnalysisRequest {
-	    provider: string;
-	    mode: string;
-	    endpoint: string;
-	    apiKey: string;
-	    model: string;
-	    prompt: string;
-	    context: string;
-	    conversation: string;
-	    question: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new AIAnalysisRequest(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.provider = source["provider"];
-	        this.mode = source["mode"];
-	        this.endpoint = source["endpoint"];
-	        this.apiKey = source["apiKey"];
-	        this.model = source["model"];
-	        this.prompt = source["prompt"];
-	        this.context = source["context"];
-	        this.conversation = source["conversation"];
-	        this.question = source["question"];
-	    }
-	}
-	export class AIAnalysisResponse {
-	    reply: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new AIAnalysisResponse(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.reply = source["reply"];
-	    }
-	}
 	export class ModelsResponse {
 	    models: string[];
 	

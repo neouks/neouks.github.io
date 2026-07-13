@@ -1,9 +1,18 @@
-/* global XLSX, Chart */
+import { loadJson, removeStoredText, saveJson, storedText, storeText } from './src/storage.js';
+import { loadGlobalScript } from './src/vendor-loader.js';
+
 const palette = [
   '#60a5fa', '#4b5563', '#74e36d', '#fb923c', '#818cf8', '#f43f5e',
   '#dacb21', '#159a9a', '#ef4444', '#67d7d7', '#9333ea', '#0f9f7a',
   '#f59e0b', '#334155', '#14b8a6', '#dc2626', '#22c55e', '#0284c7'
 ];
+
+const VENDOR_SCRIPTS = {
+  chart: './web-vendor/chart.umd.js',
+  xlsx: './web-vendor/xlsx.full.min.js'
+};
+const largeNumberFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 });
+let chartLibraryConfigured = false;
 
 const knownGroups = [
   { name: 'Basics', keys: ['发动机转速', 'engine speed', 'rpm', '车速', 'vehicle speed', 'gear', '档', 'ambient', '环境'] },
@@ -40,10 +49,17 @@ const els = {
   chartTitle: document.getElementById('chartTitle'),
   emptyState: document.getElementById('emptyState'),
   canvasWrap: document.getElementById('canvasWrap'),
+  appLogo: document.getElementById('appLogo'),
+  appLogoImage: document.getElementById('appLogoImage'),
+  backgroundImageInput: document.getElementById('backgroundImageInput'),
+  logoImageInput: document.getElementById('logoImageInput'),
+  clearBackgroundBtn: document.getElementById('clearBackgroundBtn'),
+  clearLogoBtn: document.getElementById('clearLogoBtn'),
+  backgroundStatus: document.getElementById('backgroundStatus'),
+  logoStatus: document.getElementById('logoStatus'),
   aiTranslateCard: document.getElementById('aiTranslateCard'),
   aiTranslateToggle: document.getElementById('aiTranslateToggle'),
   aiPanelClose: document.getElementById('aiPanelClose'),
-  aiTranslateBody: document.getElementById('aiTranslateBody'),
   aiConfigToggle: document.getElementById('aiConfigToggle'),
   aiConfigPanel: document.getElementById('aiConfigPanel'),
   aiProvider: document.getElementById('aiProvider'),
@@ -63,6 +79,7 @@ const els = {
 
 let currentTheme = localStorage.getItem('log-viewer-theme') || 'light';
 let measureTranslationCache = loadJson('log-viewer-measure-translations', {});
+let translationDisplaySuppressed = false;
 let resizeFrame = 0;
 let globalRenderFrame = 0;
 let pendingSlotId = 'primary';
@@ -71,6 +88,14 @@ const MAX_CHART_POINTS = 1800;
 const MAX_NAVIGATOR_POINTS = 900;
 const MAX_TABLE_ROWS = 900;
 const MEASURE_HORIZONTAL_THRESHOLD = 35;
+const APPEARANCE_KEYS = {
+  background: 'log-viewer-data-background-image',
+  logo: 'log-viewer-logo-image'
+};
+const APPEARANCE_IMAGE_LIMITS = {
+  background: { maxWidth: 1920, maxHeight: 1080, mimeType: 'image/jpeg', quality: 0.84, maxSvgBytes: 700 * 1024 },
+  logo: { maxWidth: 720, maxHeight: 260, mimeType: 'image/png', quality: 0.92, maxSvgBytes: 400 * 1024 }
+};
 const AI_PROVIDERS = {
   deepseek: { label: 'DeepSeek', endpoint: 'https://api.deepseek.com', model: 'deepseek-v4-flash', models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat'], keyPrefix: 'sk-', mode: 'openai' },
   glm: { label: 'GLM / 智谱', endpoint: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4-flash', models: ['glm-4-flash', 'glm-4', 'glm-4-plus', 'glm-4-air'], keyPrefix: '', mode: 'openai' },
@@ -81,6 +106,7 @@ const AI_PROVIDERS = {
   custom: { label: 'OpenAI兼容', endpoint: '', model: '', models: [], keyPrefix: '', mode: 'openai' }
 };
 const DEFAULT_AI_PROVIDER = 'deepseek';
+const AI_KEY_STORAGE = 'log-viewer-ai-key';
 
 const slotOrder = ['primary', 'compare'];
 const slotLabels = { primary: 'LOG A', compare: 'LOG B' };
@@ -129,13 +155,11 @@ function createLogSlot(id) {
     measures: [],
     sampleLabels: [],
     sourceName: '',
-    strategy: '',
     xView: { start: 0, end: 0 },
     navDrag: null,
     renderFrame: 0,
     layoutFrame: 0,
     chartRawIndices: [],
-    navigatorRawIndices: [],
     renderTableOnFrame: false,
     tooltipState: createTooltipState()
   };
@@ -164,14 +188,28 @@ const crosshairPlugin = {
     ctx.restore();
   }
 };
-if (window.Chart) {
-  Chart.register(crosshairPlugin);
-  Chart.defaults.font.family = 'Monaco, "Monaco", "PingFang SC", "Microsoft YaHei", monospace';
-  Chart.defaults.font.size = 11;
-  Chart.defaults.color = '#666';
+function configureChartLibrary() {
+  if (!window.Chart || chartLibraryConfigured) return;
+  window.Chart.register(crosshairPlugin);
+  window.Chart.defaults.font.family = 'Monaco, "Monaco", "PingFang SC", "Microsoft YaHei", monospace';
+  window.Chart.defaults.font.size = 11;
+  window.Chart.defaults.color = '#666';
+  chartLibraryConfigured = true;
 }
 
+async function ensureChartLibrary() {
+  await loadGlobalScript('Chart', VENDOR_SCRIPTS.chart);
+  configureChartLibrary();
+}
+
+async function ensureSpreadsheetLibrary() {
+  await loadGlobalScript('XLSX', VENDOR_SCRIPTS.xlsx);
+}
+
+configureChartLibrary();
+
 applyTheme(currentTheme, false);
+applySavedAppearance();
 initAiTranslationControls();
 initCustomSelects();
 
@@ -180,7 +218,7 @@ function fmt(v, digits = 3) {
   if (!Number.isFinite(v)) return String(v);
   const abs = Math.abs(v);
   if (abs !== 0 && abs < 0.001) return v.toExponential(2);
-  if (abs >= 1000) return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 }).format(v);
+  if (abs >= 1000) return largeNumberFormatter.format(v);
   return Number(v.toFixed(digits)).toString();
 }
 
@@ -194,7 +232,7 @@ function applyTheme(theme, shouldRender = true) {
     if (label) label.textContent = currentTheme === 'dark' ? '暗色' : '亮色';
   }
   if (window.Chart) {
-    Chart.defaults.color = currentTheme === 'dark' ? '#94a3b8' : '#64748b';
+    window.Chart.defaults.color = currentTheme === 'dark' ? '#94a3b8' : '#64748b';
   }
   if (shouldRender) {
     for (const slot of activeSlots()) {
@@ -211,22 +249,127 @@ function toggleTheme() {
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
 
-function loadJson(key, fallback) {
+function applySavedAppearance() {
+  applyDataBackground(storedText(APPEARANCE_KEYS.background));
+  applyLogo(storedText(APPEARANCE_KEYS.logo));
+}
+
+function cssUrl(dataUrl) {
+  return `url("${String(dataUrl).replace(/"/g, '\\"')}")`;
+}
+
+function applyDataBackground(dataUrl) {
+  const hasImage = Boolean(dataUrl);
+  els.canvasWrap?.classList.toggle('custom-background', hasImage);
+  if (els.canvasWrap) {
+    if (hasImage) els.canvasWrap.style.setProperty('--custom-data-background', cssUrl(dataUrl));
+    else els.canvasWrap.style.removeProperty('--custom-data-background');
+  }
+  if (els.backgroundStatus) {
+    els.backgroundStatus.textContent = hasImage ? '已应用自定义背景' : '使用默认网格背景';
+    els.backgroundStatus.classList.remove('error');
+  }
+  if (els.clearBackgroundBtn) els.clearBackgroundBtn.disabled = !hasImage;
+}
+
+function applyLogo(dataUrl) {
+  const hasImage = Boolean(dataUrl);
+  if (els.appLogo && els.appLogoImage) {
+    els.appLogo.hidden = !hasImage;
+    if (hasImage) els.appLogoImage.src = dataUrl;
+    else els.appLogoImage.removeAttribute('src');
+  }
+  document.body.classList.toggle('has-custom-logo', hasImage);
+  if (els.logoStatus) {
+    els.logoStatus.textContent = hasImage ? '已显示自定义 LOGO' : '未设置 LOGO';
+    els.logoStatus.classList.remove('error');
+  }
+  if (els.clearLogoBtn) els.clearLogoBtn.disabled = !hasImage;
+  scheduleResize();
+}
+
+function setAppearanceStatus(kind, text, isError = false) {
+  const target = kind === 'logo' ? els.logoStatus : els.backgroundStatus;
+  if (!target) return;
+  target.textContent = text;
+  target.classList.toggle('error', isError);
+}
+
+async function handleAppearanceUpload(kind, file) {
+  if (!file) return;
+  if (!file.type.startsWith('image/')) {
+    setAppearanceStatus(kind, '请选择图片文件', true);
+    return;
+  }
+  setAppearanceStatus(kind, '正在处理图片...');
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    return JSON.parse(raw);
-  } catch {
-    return fallback;
+    const dataUrl = await optimizeImageFile(file, APPEARANCE_IMAGE_LIMITS[kind]);
+    const key = APPEARANCE_KEYS[kind];
+    if (!storeText(key, dataUrl)) {
+      setAppearanceStatus(kind, '图片过大，无法保存到本地设置', true);
+      return;
+    }
+    if (kind === 'logo') applyLogo(dataUrl);
+    else applyDataBackground(dataUrl);
+  } catch (err) {
+    setAppearanceStatus(kind, err.message || '图片处理失败', true);
   }
 }
 
-function saveJson(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Ignore storage quota or private mode failures.
+function clearAppearance(kind) {
+  if (kind === 'logo') {
+    removeStoredText(APPEARANCE_KEYS.logo);
+    applyLogo('');
+    if (els.logoImageInput) els.logoImageInput.value = '';
+  } else {
+    removeStoredText(APPEARANCE_KEYS.background);
+    applyDataBackground('');
+    if (els.backgroundImageInput) els.backgroundImageInput.value = '';
   }
+}
+
+function optimizeImageFile(file, options) {
+  if (file.type === 'image/svg+xml') {
+    if (file.size > options.maxSvgBytes) throw new Error('SVG 文件过大');
+    return readFileAsDataUrl(file);
+  }
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      try {
+        const scale = Math.min(1, options.maxWidth / image.naturalWidth, options.maxHeight / image.naturalHeight);
+        const width = Math.max(1, Math.round(image.naturalWidth * scale));
+        const height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) throw new Error('无法创建图片画布');
+        ctx.clearRect(0, 0, width, height);
+        ctx.drawImage(image, 0, 0, width, height);
+        resolve(canvas.toDataURL(options.mimeType, options.quality));
+      } catch (err) {
+        reject(err);
+      } finally {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('无法读取该图片'));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('无法读取该图片'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function escapeHtml(s) {
@@ -255,7 +398,14 @@ function initAiTranslationControls() {
   if (els.aiSourceLang) els.aiSourceLang.value = savedSourceLang;
   if (els.aiTargetLang) els.aiTargetLang.value = savedTargetLang;
   if (els.aiCustomModel) els.aiCustomModel.value = localStorage.getItem('log-viewer-ai-custom-model') || '';
-  if (els.aiApiKey) els.aiApiKey.value = localStorage.getItem('log-viewer-ai-key') || '';
+  if (els.aiApiKey) {
+    const legacyKey = localStorage.getItem(AI_KEY_STORAGE) || '';
+    els.aiApiKey.value = sessionStorage.getItem(AI_KEY_STORAGE) || legacyKey;
+    if (legacyKey) {
+      sessionStorage.setItem(AI_KEY_STORAGE, legacyKey);
+      localStorage.removeItem(AI_KEY_STORAGE);
+    }
+  }
   applyProviderPreset(false);
   updateCustomModelVisibility();
   setAiConfigOpen(localStorage.getItem('log-viewer-ai-config-open') === 'true');
@@ -268,7 +418,7 @@ function persistAiConfig() {
   if (els.aiCustomModel) localStorage.setItem('log-viewer-ai-custom-model', els.aiCustomModel.value.trim());
   if (els.aiSourceLang) localStorage.setItem('log-viewer-ai-source-lang', els.aiSourceLang.value);
   if (els.aiTargetLang) localStorage.setItem('log-viewer-ai-target-lang', els.aiTargetLang.value);
-  if (els.aiApiKey) localStorage.setItem('log-viewer-ai-key', els.aiApiKey.value.trim());
+  if (els.aiApiKey) sessionStorage.setItem(AI_KEY_STORAGE, els.aiApiKey.value.trim());
 }
 
 function getWailsApp() {
@@ -387,8 +537,10 @@ function translationCacheKey(name, sourceLang = activeTranslationScope().sourceL
 
 function displayMeasureName(measure) {
   const original = originalMeasureName(measure);
-  const scoped = measureTranslationCache[translationCacheKey(original)];
-  const legacy = activeTranslationScope().sourceLang === 'auto' && activeTranslationScope().targetLang === 'zh'
+  if (translationDisplaySuppressed) return original || measure.name || '';
+  const scope = activeTranslationScope();
+  const scoped = measureTranslationCache[translationCacheKey(original, scope.sourceLang, scope.targetLang)];
+  const legacy = scope.sourceLang === 'auto' && scope.targetLang === 'zh'
     ? measureTranslationCache[original]
     : '';
   return scoped || measure.displayName || legacy || measure.name || '';
@@ -418,6 +570,7 @@ function applyTranslationsToAll(translations, payload = buildAiPayload()) {
 
 function handleTranslationLanguageChange() {
   persistAiConfig();
+  translationDisplaySuppressed = false;
   applyCachedTranslations(allMeasures());
   refreshAfterTranslationChange();
 }
@@ -447,10 +600,11 @@ async function translateMeasureNames() {
     return;
   }
 
+  translationDisplaySuppressed = false;
   const names = [...new Set(measures.map(originalMeasureName).map(compactText).filter(Boolean))]
     .filter(name => !measureTranslationCache[translationCacheKey(name, basePayload.sourceLang, basePayload.targetLang)]);
   if (!names.length) {
-    setTranslationStatus('所有数据流已有翻译缓存。', 'success');
+    setTranslationStatus('所有数据流已翻译。', 'success');
     applyCachedTranslations(measures);
     refreshAfterTranslationChange();
     return;
@@ -743,8 +897,10 @@ function deeplLangCode(code) {
 }
 
 function normalizeAiEndpoint(endpoint) {
-  const trimmed = endpoint.trim().replace(/\/+$/, '');
-  return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`;
+  let trimmed = endpoint.trim().replace(/\/+$/, '');
+  if (trimmed.endsWith('/chat/completions')) return trimmed;
+  if (trimmed.endsWith('/models')) trimmed = trimmed.slice(0, -'/models'.length);
+  return `${trimmed}/chat/completions`;
 }
 
 function normalizeModelsEndpoint(endpoint) {
@@ -761,9 +917,10 @@ function parseTranslationContent(content) {
 }
 
 function clearTranslations() {
+  translationDisplaySuppressed = true;
   for (const measure of allMeasures()) measure.displayName = '';
   refreshAfterTranslationChange();
-  setTranslationStatus('已清除当前翻译显示，再次翻译时将优先使用缓存。');
+  setTranslationStatus('已清除当前翻译显示。');
 }
 
 function cleanName(name) {
@@ -895,9 +1052,12 @@ function splitHeaderNameUnit(rawName, rawUnit = '') {
 }
 
 function normalizeRows(rows) {
-  return rows
-    .map(row => Array.from(row || []).map(v => (v === undefined ? null : v)))
-    .filter(row => row.some(v => !isBlank(v)));
+  const normalized = [];
+  for (const sourceRow of rows) {
+    const row = Array.from(sourceRow || [], value => value === undefined ? null : value);
+    if (row.some(value => !isBlank(value))) normalized.push(row);
+  }
+  return normalized;
 }
 
 function decodeText(buffer) {
@@ -932,12 +1092,17 @@ async function loadFile(file, slot = logSlots[0]) {
   updateParseProgress(`${slot.label} 读取文件：${file.name} (${Math.round(file.size / 1024)} KB)`);
   await nextFrame();
   try {
-    const data = await readFile(file);
+    const isTextTable = /\.(csv|txt|tsv)$/i.test(file.name);
+    const libraryPromise = Promise.all([
+      ensureChartLibrary(),
+      isTextTable ? Promise.resolve() : ensureSpreadsheetLibrary()
+    ]);
+    const [data] = await Promise.all([readFile(file), libraryPromise]);
     updateParseProgress(`${slot.label} 识别编码与表格结构...`);
     await nextFrame();
     const parsed = parseFileData(file, data, slot);
     if (!parsed.measures.length) throw new Error('没有找到可绘图的数值列');
-    setData(slot, parsed.measures, parsed.sampleLabels, file.name, parsed.strategy);
+    setData(slot, parsed.measures, parsed.sampleLabels, file.name);
     updateParseProgress(`已载入：${file.name} | ${parsed.sampleLabels.length} 个采样点 | ${parsed.measures.length} 条数据流 | ${parsed.strategy}`);
     els.fileInput.value = '';
     els.slotFileInput.value = '';
@@ -972,7 +1137,9 @@ function parseFileData(file, data, slot = logSlots[0]) {
     return parsed;
   }
 
-  const workbook = XLSX.read(data, {
+  const xlsx = window.XLSX;
+  if (!xlsx) throw new Error('XLSX 解析组件未加载');
+  const workbook = xlsx.read(data, {
     type: 'array',
     raw: true,
     cellDates: false,
@@ -985,7 +1152,7 @@ function parseFileData(file, data, slot = logSlots[0]) {
   for (const sheetName of workbook.SheetNames) {
     try {
       const ws = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json(ws, {
+      const rows = xlsx.utils.sheet_to_json(ws, {
         header: 1,
         raw: true,
         defval: null,
@@ -1291,12 +1458,27 @@ function inferNameFromColumn(rows, col) {
 }
 
 function makeMeasure({ name, unit, values, color }) {
-  const nums = values.filter(v => v !== null && Number.isFinite(v));
-  const min = Math.min(...nums);
-  const max = Math.max(...nums);
-  const minIndex = values.findIndex(v => v === min);
-  const maxIndex = values.findIndex(v => v === max);
-  const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+  let min = Infinity;
+  let max = -Infinity;
+  let minIndex = -1;
+  let maxIndex = -1;
+  let sum = 0;
+  let count = 0;
+  for (let index = 0; index < values.length; index++) {
+    const value = values[index];
+    if (value === null || !Number.isFinite(value)) continue;
+    if (value < min) {
+      min = value;
+      minIndex = index;
+    }
+    if (value > max) {
+      max = value;
+      maxIndex = index;
+    }
+    sum += value;
+    count++;
+  }
+  const avg = count ? sum / count : NaN;
   return {
     id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
     name,
@@ -1334,15 +1516,119 @@ function rebuildNormalizedValues(items) {
         if (v > max) max = v;
       }
     }
+    const scale = buildDisplayScale(bucketItems, min, max);
     for (const m of bucketItems) {
-      m.normalized = buildMonotonicSharedScaleValues(m.values, min, max);
+      m.normalized = buildMonotonicSharedScaleValues(m.values, scale.min, scale.max);
+      m.curveMode = metricCurveMode(m);
     }
   }
 }
 
 function normalizationKey(measure) {
-  const unit = stripUnitBrackets(measure.unit || '').toLowerCase();
-  return unit ? `unit|${unit}` : 'unit|unitless';
+  const spec = metricScaleSpec(measure);
+  if (spec.key) return spec.key;
+  const unit = canonicalUnit(measure.unit);
+  return unit ? `unit|${unit}` : `measure|${compactText(measure.name).toLowerCase()}`;
+}
+
+function buildDisplayScale(bucketItems, min, max) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: 0, max: 100 };
+
+  const specs = bucketItems.map(metricScaleSpec);
+  const fixedMin = finiteNumbers(specs.map(spec => spec.min));
+  const fixedMax = finiteNumbers(specs.map(spec => spec.max));
+  const explicitMinSpan = Math.max(0, ...finiteNumbers(specs.map(spec => spec.minSpan)));
+  const minSpan = explicitMinSpan || inferGenericDisplayMinSpan(min, max);
+  let scaleMin = fixedMin.length ? Math.min(...fixedMin, min) : min;
+  let scaleMax = fixedMax.length ? Math.max(...fixedMax, max) : max;
+  const dataCenter = (min + max) / 2;
+  const currentSpan = scaleMax - scaleMin;
+  const targetSpan = Math.max(currentSpan, minSpan);
+
+  if (!Number.isFinite(targetSpan) || targetSpan <= 0) {
+    const fallbackSpan = Math.max(minSpan, Math.max(Math.abs(dataCenter), 1) * 0.02, 1);
+    return { min: dataCenter - fallbackSpan / 2, max: dataCenter + fallbackSpan / 2 };
+  }
+
+  if (targetSpan > currentSpan) {
+    scaleMin = dataCenter - targetSpan / 2;
+    scaleMax = dataCenter + targetSpan / 2;
+    if (fixedMin.length && scaleMin > Math.min(...fixedMin)) {
+      const shift = scaleMin - Math.min(...fixedMin);
+      scaleMin -= shift;
+      scaleMax -= shift;
+    }
+    if (fixedMax.length && scaleMax < Math.max(...fixedMax)) {
+      const shift = Math.max(...fixedMax) - scaleMax;
+      scaleMin += shift;
+      scaleMax += shift;
+    }
+  }
+
+  return { min: scaleMin, max: scaleMax };
+}
+
+function finiteNumbers(values) {
+  return values.filter(value => Number.isFinite(value));
+}
+
+function inferGenericDisplayMinSpan(min, max) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return 1;
+  const center = Math.max(Math.abs(min), Math.abs(max), Math.abs((min + max) / 2));
+  if (center >= 100) return center * 0.02;
+  if (center >= 10) return 1;
+  if (center >= 1) return 0.1;
+  return 0.01;
+}
+
+function canonicalUnit(unit = '') {
+  const raw = stripUnitBrackets(unit).toLowerCase();
+  if (!raw) return '';
+  if (['%', 'percent'].includes(raw)) return '%';
+  if (['°c', '℃', '*c', 'c'].includes(raw)) return 'c';
+  if (['rpm', '/min', '1/min', 'min-1', 'r/min'].includes(raw)) return 'rpm';
+  if (['km/h', 'kph'].includes(raw)) return 'km/h';
+  if (['bar', 'mbar', 'hpa', 'kpa', 'mpa', 'pa', 'psi'].includes(raw)) return raw;
+  return raw;
+}
+
+function metricScaleSpec(measure) {
+  const unit = canonicalUnit(measure.unit);
+  const name = compactText(measure.name).toLowerCase();
+  const haystack = `${name} ${unit}`;
+
+  if (/\bgear\b|档位|档/.test(haystack)) {
+    return { key: 'semantic|gear', min: 0, max: 8, minSpan: 8 };
+  }
+  if (unit === '%') return { key: 'unit|%', min: 0, max: 100, minSpan: 100 };
+  if (unit === 'hpa' || unit === 'mbar') return { key: `unit|${unit}`, minSpan: 100 };
+  if (unit === 'kpa') return { key: 'unit|kpa', minSpan: 10 };
+  if (unit === 'bar') return { key: 'unit|bar', minSpan: 1 };
+  if (unit === 'mpa') return { key: 'unit|mpa', minSpan: 0.1 };
+  if (unit === 'pa') return { key: 'unit|pa', minSpan: 10000 };
+  if (unit === 'psi') return { key: 'unit|psi', minSpan: 1.5 };
+  if (unit === 'rpm' || /engine speed|发动机转速|转速|\brpm\b/.test(haystack)) {
+    return { key: 'semantic|rpm', min: 0, max: 8000, minSpan: 8000 };
+  }
+  if (unit === 'km/h' || unit === 'mph' || /vehicle speed|车速/.test(haystack)) {
+    return { key: `semantic|speed|${unit || 'unitless'}`, min: 0, max: unit === 'mph' ? 180 : 280, minSpan: unit === 'mph' ? 180 : 280 };
+  }
+  if (unit === 'lambda' || /\blambda\b/.test(haystack)) {
+    return { key: 'semantic|lambda', min: 0.5, max: 1.5, minSpan: 1 };
+  }
+  if (unit === 'afr' || /\bafr\b|air fuel|a\/f|空燃比/.test(haystack)) {
+    return { key: 'semantic|afr', min: 8, max: 22, minSpan: 14 };
+  }
+  if (unit === 'c' || /temperature|温度|temp/.test(haystack)) {
+    return { key: 'semantic|temperature', minSpan: 20 };
+  }
+
+  return { key: unit ? `unit|${unit}` : '', minSpan: 0 };
+}
+
+function metricCurveMode(measure) {
+  const spec = metricScaleSpec(measure);
+  return spec.key === 'semantic|gear' ? 'step' : 'linear';
 }
 
 function buildMonotonicSharedScaleValues(values, min, max) {
@@ -1368,13 +1654,12 @@ function groupFor(name, unit = '') {
   return knownGroups.find(g => g.keys.length && g.keys.some(k => s.includes(k.toLowerCase())))?.name || 'Other';
 }
 
-function setData(slot, newMeasures, labels, sourceName, strategy = '') {
+function setData(slot, newMeasures, labels, sourceName) {
   rebuildNormalizedValues(newMeasures);
   applyCachedTranslations(newMeasures);
   slot.measures = newMeasures.map(m => ({ ...m, slotId: slot.id, slotLabel: slot.label }));
   slot.sampleLabels = labels;
   slot.sourceName = sourceName;
-  slot.strategy = strategy;
   resetXView(slot);
   slot.root.classList.add('ready');
   slot.title.textContent = sourceName || slot.label;
@@ -1383,7 +1668,6 @@ function setData(slot, newMeasures, labels, sourceName, strategy = '') {
   slot.navigator.setAttribute('aria-hidden', 'false');
   syncToggleAllButton();
   updateEmptyState();
-  els.canvasWrap.classList.add('with-navigator');
   hideCoordinateTooltip(slot, true);
   renderSlotsAfterLayout(activeSlots());
   scheduleGlobalViews();
@@ -1516,7 +1800,10 @@ function renderMeasureControls() {
 
 function groupMeasures(items) {
   const byGroup = new Map();
-  for (const m of items) byGroup.set(m.group, [...(byGroup.get(m.group) || []), m]);
+  for (const measure of items) {
+    if (!byGroup.has(measure.group)) byGroup.set(measure.group, []);
+    byGroup.get(measure.group).push(measure);
+  }
   return byGroup;
 }
 
@@ -1627,7 +1914,8 @@ function renderChart(slot) {
     borderWidth: 2.2,
     pointRadius: els.showPoints.checked ? 2 : 0,
     pointHoverRadius: 5,
-    tension: 0.15,
+    tension: 0,
+    stepped: m.curveMode === 'step' ? 'before' : false,
     spanGaps: true,
     animation: false,
     metaMeasure: m
@@ -1671,7 +1959,7 @@ function renderChart(slot) {
   };
 
   if (!slot.chart) {
-    slot.chart = new Chart(slot.chartCanvas, { type: 'line', data: { labels: win.labels, datasets }, options });
+    slot.chart = new window.Chart(slot.chartCanvas, { type: 'line', data: { labels: win.labels, datasets }, options });
   } else {
     slot.chart.data.labels = win.labels;
     slot.chart.data.datasets = datasets;
@@ -1701,14 +1989,14 @@ function renderNavigator(slot) {
   if (!slot.navigatorCanvas || !slot.sampleLabels.length) return;
   const visible = slot.measures.filter(m => m.visible);
   const rawIndices = sampledIndices(0, slot.sampleLabels.length - 1, MAX_NAVIGATOR_POINTS);
-  slot.navigatorRawIndices = rawIndices;
   const datasets = visible.map(m => ({
     data: rawIndices.map(index => m.normalized[index]),
     borderColor: m.color,
     backgroundColor: m.color,
     borderWidth: 1.5,
     pointRadius: 0,
-    tension: 0.12,
+    tension: 0,
+    stepped: m.curveMode === 'step' ? 'before' : false,
     spanGaps: true,
     animation: false
   }));
@@ -1737,7 +2025,7 @@ function renderNavigator(slot) {
   };
 
   if (!slot.navigatorChart) {
-    slot.navigatorChart = new Chart(slot.navigatorCanvas, { type: 'line', data: { labels: rawIndices.map(index => slot.sampleLabels[index]), datasets }, options });
+    slot.navigatorChart = new window.Chart(slot.navigatorCanvas, { type: 'line', data: { labels: rawIndices.map(index => slot.sampleLabels[index]), datasets }, options });
   } else {
     slot.navigatorChart.data.labels = rawIndices.map(index => slot.sampleLabels[index]);
     slot.navigatorChart.data.datasets = datasets;
@@ -1808,7 +2096,8 @@ function scheduleRangeRender(slot, includeTable = false) {
     slot.renderFrame = 0;
     slot.renderTableOnFrame = false;
     renderChart(slot);
-    renderNavigator(slot);
+    updateNavigatorSelection(slot);
+    if (slot.rangeMeta) slot.rangeMeta.textContent = rangeText(slot);
     renderDataTable(shouldRenderTable);
   });
 }
@@ -1985,7 +2274,8 @@ function ensureDataIndexVisible(slot, index) {
   if (start !== slot.xView.start || end !== slot.xView.end) {
     slot.xView = { start, end };
     renderChart(slot);
-    renderNavigator(slot);
+    updateNavigatorSelection(slot);
+    if (slot.rangeMeta) slot.rangeMeta.textContent = rangeText(slot);
     renderDataTable(false);
   }
 }
@@ -2227,23 +2517,24 @@ function renderDataTable(force = false) {
     const slotVisible = slot.measures.filter(m => m.visible);
     if (slotVisible.length) groups.push({ name: compare ? `${slot.label} · ${slot.sourceName || 'LOG'}` : 'Data Stream', slot, items: slotVisible });
   }
-  const flat = groups.flatMap(g => g.items.map(item => ({ ...item, sourceSlot: g.slot })));
+  const flat = groups.flatMap(group => group.items.map(measure => ({ measure, slot: group.slot })));
+  const windows = new Map(groups.map(group => [group.slot.id, currentWindow(group.slot)]));
   const headerGroups = groups.map(g => `<th colspan="${g.items.length}">${escapeHtml(g.name)}</th>`).join('');
-  const headerMeasures = flat.map(m => `
-    <th class="dt-measure" style="color:${m.color}">
-      <span title="${escapeHtml(displayMeasureName(m) === originalMeasureName(m) ? originalMeasureName(m) : `${displayMeasureName(m)} / ${originalMeasureName(m)}`)}">${escapeHtml(displayMeasureName(m))}</span>
-      <small>[ ${escapeHtml(m.unit || '-')} ]</small>
+  const headerMeasures = flat.map(({ measure }) => `
+    <th class="dt-measure" style="color:${measure.color}">
+      <span title="${escapeHtml(displayMeasureName(measure) === originalMeasureName(measure) ? originalMeasureName(measure) : `${displayMeasureName(measure)} / ${originalMeasureName(measure)}`)}">${escapeHtml(displayMeasureName(measure))}</span>
+      <small>[ ${escapeHtml(measure.unit || '-')} ]</small>
     </th>
   `).join('');
-  const maxRows = Math.max(...groups.map(g => currentWindow(g.slot).labels.length));
+  const maxRows = Math.max(...Array.from(windows.values(), window => window.labels.length));
   const displayRows = Math.min(maxRows, MAX_TABLE_ROWS);
   const bodyRows = Array.from({ length: displayRows }, (_, offset) => {
     return `
     <tr>
-      ${flat.map(m => {
-        const win = currentWindow(m.sourceSlot);
+      ${flat.map(({ measure, slot }) => {
+        const win = windows.get(slot.id);
         const rowIndex = win.start + offset;
-        return `<td>${offset < win.labels.length ? fmt(m.values[rowIndex]) : '-'}</td>`;
+        return `<td>${offset < win.labels.length ? fmt(measure.values[rowIndex]) : '-'}</td>`;
       }).join('')}
     </tr>
   `;
@@ -2299,7 +2590,6 @@ function renderStats() {
 }
 
 function setDrawerOpen(open) {
-  document.body.classList.toggle('drawer-open', open);
   els.controlDrawer.classList.toggle('open', open);
   els.drawerToggle.classList.toggle('open', open);
   els.controlDrawer.setAttribute('aria-hidden', String(!open));
@@ -2314,9 +2604,7 @@ function updateEmptyState() {
   const hasData = activeSlots().length > 0;
   const compare = isCompareMode();
   els.emptyState.style.display = hasData ? 'none' : 'flex';
-  els.canvasWrap.classList.toggle('with-navigator', hasData);
   els.canvasWrap.classList.toggle('compare-mode', compare);
-  els.logGrid.classList.toggle('has-data', hasData);
   els.logGrid.classList.toggle('compare-mode', compare);
   for (const slot of logSlots) {
     slot.root.hidden = slot.id === 'compare' && !compare;
@@ -2339,7 +2627,6 @@ function resetSlot(slot) {
   slot.measures = [];
   slot.sampleLabels = [];
   slot.sourceName = '';
-  slot.strategy = '';
   slot.xView = { start: 0, end: 0 };
   slot.navDrag = null;
   if (slot.layoutFrame) cancelAnimationFrame(slot.layoutFrame);
@@ -2439,6 +2726,10 @@ els.exportCsvBtn.addEventListener('click', exportVisibleCsv);
 els.showExtrema.addEventListener('change', () => activeSlots().forEach(renderChart));
 els.showPoints.addEventListener('change', () => activeSlots().forEach(renderChart));
 els.themeToggle?.addEventListener('click', toggleTheme);
+els.backgroundImageInput?.addEventListener('change', e => handleAppearanceUpload('background', e.target.files[0]));
+els.logoImageInput?.addEventListener('change', e => handleAppearanceUpload('logo', e.target.files[0]));
+els.clearBackgroundBtn?.addEventListener('click', () => clearAppearance('background'));
+els.clearLogoBtn?.addEventListener('click', () => clearAppearance('logo'));
 els.drawerToggle.addEventListener('click', toggleDrawer);
 els.aiTranslateToggle?.addEventListener('click', toggleAiTranslatePanel);
 els.aiPanelClose?.addEventListener('click', () => setAiTranslateOpen(false));
